@@ -6,12 +6,11 @@ from deques import len
 
 
 
+import ioselectors
 
 when defined(windows):
-  import ioselectors
   import sets
 else:
-  import selectors
   import posix
 
 from osproc import countProcessors
