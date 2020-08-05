@@ -305,13 +305,13 @@ proc eventLoop(params: (OnRequest, Settings)) =
   server.setSockOpt(OptReusePort, true)
   server.bindAddr(settings.port, settings.bindAddr)
   server.listen()
-  server.getFd().setBlocking(false)
-  selector.registerHandle(server.getFd(), {Event.Read}, initData(Server))
+  server.getFd.setBlocking(false)
+  selector.registerHandle(server.getFd, {Event.Read}, initData(Server))
 
   let disp = getGlobalDispatcher()
 
   when defined(posix):
-    selector.registerHandle(getFd(getIoHandler(disp)), {Event.Read},
+    selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
                           initData(Dispatcher))
   else:
     for h in disp.handles.items:
