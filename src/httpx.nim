@@ -5,11 +5,12 @@ import options, logging
 from deques import len
 
 
+import ioselectors
 
 when defined(windows):
-  import sets, ioselectors
+  import sets
 else:
-  import posix, selectors
+  import posix
 
 from osproc import countProcessors
 
