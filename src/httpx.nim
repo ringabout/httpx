@@ -17,7 +17,7 @@ import times # TODO this shouldn't be required. Nim bug?
 
 export httpcore
 
-import httpbeast/parser
+import httpx/parser
 
 type
   FdKind = enum
