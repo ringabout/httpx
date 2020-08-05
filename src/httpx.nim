@@ -309,15 +309,15 @@ proc eventLoop(params: (OnRequest, Settings)) =
   selector.registerHandle(server.getFd(), {Event.Read}, initData(Server))
 
   let disp = getGlobalDispatcher()
-  when defined(windows):
+
+  when defined(posix):
+    selector.registerHandle(getIoHandler(disp).getFd(), {Event.Read},
+                          initData(Dispatcher))
+  else:
     for h in disp.handles.items:
       selector.registerHandle(nativesockets.SocketHandle(h), {Event.Read},
                             initData(Dispatcher))
-  else:
-    selector.registerHandle(getIoHandler(disp).getFd(), {Event.Read},
-                          initData(Dispatcher))
 
-                        
 
   # Set up timer to get current date/time.
   discard updateDate(0.AsyncFD)
