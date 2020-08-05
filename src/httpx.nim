@@ -11,7 +11,7 @@ when defined(windows):
   import ioselectors
   import sets
 else:
-  import ioselectors
+  import selectors
   import posix
 
 from osproc import countProcessors
