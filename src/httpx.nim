@@ -311,7 +311,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
   let disp = getGlobalDispatcher()
 
   when defined(posix):
-    selector.registerHandle(getIoHandler(disp).getFd(), {Event.Read},
+    selector.registerHandle(getFd(getIoHandler(disp)), {Event.Read},
                           initData(Dispatcher))
   else:
     for h in disp.handles.items:
