@@ -57,7 +57,7 @@ type
     numThreads: int
 
 const
-  serverInfo = "HttpBeast"
+  serverInfo = "HttpX"
 
 proc initSettings*(port: Port = Port(8080),
                    bindAddr: string = "",
@@ -160,6 +160,7 @@ proc bodyInTransit(data: ptr Data): bool =
   return bodyLen != trueLen
 
 proc validateRequest(req: Request): bool {.gcsafe.}
+
 proc processEvents(selector: Selector[Data],
                    events: array[64, ReadyKey], count: int,
                    onRequest: OnRequest) =
