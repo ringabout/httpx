@@ -293,6 +293,7 @@ proc processEvents(selector: Selector[Data],
         assert false
 
 var serverDate {.threadvar.}: string
+
 proc updateDate(fd: AsyncFD): bool =
   result = false # Returning true signifies we want timer to stop.
   serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
