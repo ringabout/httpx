@@ -1,5 +1,6 @@
 import options, httpcore, parseutils
 
+
 proc parseHttpMethod*(data: string, start: int): Option[HttpMethod] =
   ## Parses the data to find the request HttpMethod.
 
