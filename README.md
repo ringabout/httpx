@@ -1,5 +1,5 @@
 # httpx
-This project is based on Dom96's perfect work on [httpbeast](https://github.com/dom96/httpbeast) and add windows support.
+This project is based on Dom96's perfect work on [httpbeast](https://github.com/dom96/httpbeast) and adds windows support.
 
 ## Installation
 
