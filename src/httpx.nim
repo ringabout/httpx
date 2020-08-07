@@ -15,7 +15,7 @@ else:
 
 from osproc import countProcessors
 
-import times # TODO this shouldn't be required. Nim bug?
+import times
 
 export httpcore
 
@@ -61,14 +61,14 @@ const
 
 proc initSettings*(port: Port = Port(8080),
                    bindAddr: string = "",
-                   numThreads: int = 0): Settings =
+                   numThreads: int = 0): Settings {.inline.} =
   Settings(
     port: port,
     bindAddr: bindAddr,
     numThreads: numThreads,
   )
 
-proc initData(fdKind: FdKind, ip = ""): Data =
+proc initData(fdKind: FdKind, ip = ""): Data {.inline.} =
   Data(fdKind: fdKind,
        sendQueue: "",
        bytesSent: 0,
@@ -108,7 +108,7 @@ template handleClientClosure(selector: Selector[Data],
     return
 
 proc onRequestFutureComplete(theFut: Future[void],
-                             selector: Selector[Data], fd: int) =
+                             selector: Selector[Data], fd: int) {.inline.} =
   if theFut.failed:
     raise theFut.error
 
@@ -126,7 +126,7 @@ template methodNeedsBody(data: ptr Data): untyped =
     m.isSome() and m.get() in {HttpPost, HttpPut, HttpConnect, HttpPatch}
   )
 
-proc slowHeadersCheck(data: ptr Data): bool =
+proc slowHeadersCheck(data: ptr Data): bool {.inline.} =
   # TODO: See how this `unlikely` affects ASM.
   if unlikely(methodNeedsBody(data)):
     # Look for \c\l\c\l inside data.
@@ -166,7 +166,7 @@ proc processEvents(selector: Selector[Data],
                    onRequest: OnRequest) =
   for i in 0 ..< count:
     let fd = events[i].fd
-    var data: ptr Data = addr(selector.getData(fd))
+    var data: ptr Data = addr(getData(selector, fd))
     # Handle error events first.
     if Event.Error in events[i].events:
       if isDisconnectionError({SocketFlag.SafeDisconn},
@@ -384,7 +384,7 @@ proc send*(req: Request, code: HttpCode, body: string, headers="") =
   getData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
-proc send*(req: Request, code: HttpCode) =
+proc send*(req: Request, code: HttpCode) {.inline.} =
   ## Responds with the specified HttpCode. The body of the response
   ## is the same as the HttpCode description.
   req.send(code, $code)
@@ -425,11 +425,11 @@ proc body*(req: Request): Option[string] =
         0
     assert result.get.len == length
 
-proc ip*(req: Request): string =
+proc ip*(req: Request): string {.inline.} =
   ## Retrieves the IP address that the request was made from.
   req.selector.getData(req.client).ip
 
-proc forget*(req: Request) =
+proc forget*(req: Request) {.inline.} =
   ## Unregisters the underlying request's client socket from httpx's
   ## event loop.
   ##
@@ -450,7 +450,7 @@ proc validateRequest(req: Request): bool =
   # code."
   if req.httpMethod.isNone:
     req.send(Http501)
-    return false
+    result = false
 
 proc run*(onRequest: OnRequest, settings: Settings) =
   ## Starts the HTTP server and calls `onRequest` for each request.
