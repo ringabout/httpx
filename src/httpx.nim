@@ -5,7 +5,6 @@ import options, logging
 from deques import len
 
 
-
 import ioselectors
 
 
@@ -216,7 +215,8 @@ proc processEvents(selector: Selector[Data],
           # Write buffer to our data.
           let origLen = data.data.len
           data.data.setLen(origLen + ret)
-          for i in 0 ..< ret: data.data[origLen+i] = buf[i]
+          for i in 0 ..< ret: 
+            data.data[origLen + i] = buf[i]
 
           if fastHeadersCheck(data) or slowHeadersCheck(data):
             # First line and headers for request received.
@@ -367,7 +367,12 @@ proc send*(req: Request, code: HttpCode, body: string, headers="") =
   template getData: var Data = req.selector.getData(req.client)
   assert getData.headersFinished, "Selector not ready to send."
 
-  let otherHeaders = if likely(headers.len == 0): "" else: "\c\L" & headers
+  let otherHeaders = 
+    if likely(headers.len == 0): 
+      ""
+    else: 
+      "\c\L" & headers
+
   var
     text = (
       "HTTP/1.1 $#\c\L" &
@@ -412,11 +417,11 @@ proc body*(req: Request): Option[string] =
 
   when not defined(release):
     let length =
-      if req.headers.get().hasKey("Content-Length"):
-        req.headers.get()["Content-Length"].parseInt()
+      if req.headers.get.hasKey("Content-Length"):
+        req.headers.get["Content-Length"].parseInt
       else:
         0
-    assert result.get().len == length
+    assert result.get.len == length
 
 proc ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
@@ -441,7 +446,7 @@ proc validateRequest(req: Request): bool =
   # that is unrecognized or not implemented by an origin server, the
   # origin server SHOULD respond with the 501 (Not Implemented) status
   # code."
-  if req.httpMethod().isNone():
+  if req.httpMethod.isNone:
     req.send(Http501)
     return false
 
