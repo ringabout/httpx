@@ -57,7 +57,7 @@ type
     numThreads: int
 
 const
-  serverInfo = "HttpX"
+  serverInfo {.strdefine.} = "Nim-Httpx"
 
 proc initSettings*(port: Port = Port(8080),
                    bindAddr: string = "",
@@ -364,7 +364,9 @@ proc send*(req: Request, code: HttpCode, body: string, headers="") =
     return
 
   # TODO: Reduce the amount of `getData` accesses.
-  template getData: var Data = req.selector.getData(req.client)
+  template getData: var Data = 
+    req.selector.getData(req.client)
+
   assert getData.headersFinished, "Selector not ready to send."
 
   let otherHeaders = 
