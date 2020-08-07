@@ -8,6 +8,7 @@ from deques import len
 
 import ioselectors
 
+
 when defined(windows):
   import sets
 else:
@@ -422,11 +423,11 @@ proc ip*(req: Request): string =
   req.selector.getData(req.client).ip
 
 proc forget*(req: Request) =
-  ## Unregisters the underlying request's client socket from httpbeast's
+  ## Unregisters the underlying request's client socket from httpx's
   ## event loop.
   ##
   ## This is useful when you want to register ``req.client`` in your own
-  ## event loop, for example when wanting to integrate httpbeast into a
+  ## event loop, for example when wanting to integrate httpx into a
   ## websocket library.
   req.selector.unregister(req.client)
 
@@ -481,7 +482,7 @@ proc run*(onRequest: OnRequest) {.inline.} =
 
 when false:
   proc close*(port: Port) =
-    ## Closes an httpbeast server that is running on the specified port.
+    ## Closes an httpx server that is running on the specified port.
     ##
     ## **NOTE:** This is not yet implemented.
 

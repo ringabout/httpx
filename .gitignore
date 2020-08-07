@@ -1,3 +1,7 @@
 /tests/*
 !/tests/*.nim
 !/tests/*.cfg
+nimcache
+testresults
+.gitignore
+outputGotten.txt
