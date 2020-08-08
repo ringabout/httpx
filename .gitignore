@@ -5,3 +5,5 @@ nimcache
 testresults
 .gitignore
 outputGotten.txt
+src/httpy.nim
+.gitignore
