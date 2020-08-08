@@ -7,3 +7,4 @@ testresults
 outputGotten.txt
 src/httpy.nim
 .gitignore
+.vscode/settings.json
