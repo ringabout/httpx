@@ -1,6 +1,8 @@
 # httpx
 This project is based on Dom96's perfect work on [httpbeast](https://github.com/dom96/httpbeast) and adds windows support.
 
+It is also used by [prologue](https://github.com/planety/prologue).
+
 ## Installation
 
 ```
