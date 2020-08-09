@@ -23,3 +23,21 @@ nimble install httpx
 ```
 --threads:on
 ```
+
+## Hello world
+
+```nim
+import options, asyncdispatch
+
+import httpx
+
+proc onRequest(req: Request): Future[void] =
+  if req.httpMethod == some(HttpGet):
+    case req.path.get()
+    of "/":
+      req.send("Hello World")
+    else:
+      req.send(Http404)
+
+run(onRequest)
+```

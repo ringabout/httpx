@@ -1,6 +1,6 @@
-import options, chronos
+import options, asyncdispatch
 
-import httpy
+import httpx
 
 proc onRequest(req: Request): Future[void] =
   if req.httpMethod == some(HttpGet):
