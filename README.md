@@ -9,6 +9,10 @@ It is also used by [prologue](https://github.com/planety/prologue).
 nimble install httpx
 ```
 
+## Notes
+
+Notes that multi-threads may be slower than single-thread!
+
 
 ## Usage
 
