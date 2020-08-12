@@ -9,7 +9,10 @@ srcDir = "src"
 
 # Dependencies
 
-requires "nim >= 1.2.0"
+when defined(windows):
+  requires "nim >= 1.3.5"
+else:
+  requires "nim >= 1.2.0"
 requires "ioselectors >= 0.1.0"
 
 
