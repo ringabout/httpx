@@ -79,14 +79,14 @@ const
 
 proc initSettings*(port: Port = Port(8080),
                    bindAddr: string = "",
-                   numThreads: int = 0): Settings {.inline.} =
+                   numThreads: int = 0): Settings =
   Settings(
     port: port,
     bindAddr: bindAddr,
     numThreads: numThreads,
   )
 
-proc initData(fdKind: FdKind, ip = ""): Data {.inline.} =
+proc initData(fdKind: FdKind, ip = ""): Data =
   Data(fdKind: fdKind,
        sendQueue: "",
        bytesSent: 0,
@@ -126,7 +126,7 @@ template handleClientClosure(selector: Selector[Data],
     return
 
 proc onRequestFutureComplete(theFut: Future[void],
-                             selector: Selector[Data], fd: int) {.inline.} =
+                             selector: Selector[Data], fd: int) =
   if theFut.failed:
     raise theFut.error
 
@@ -144,7 +144,7 @@ template methodNeedsBody(data: ptr Data): untyped =
     m.isSome() and m.get() in {HttpPost, HttpPut, HttpConnect, HttpPatch}
   )
 
-proc slowHeadersCheck(data: ptr Data): bool {.inline.} =
+proc slowHeadersCheck(data: ptr Data): bool =
   # TODO: See how this `unlikely` affects ASM.
   if unlikely(methodNeedsBody(data)):
     # Look for \c\l\c\l inside data.
@@ -402,7 +402,7 @@ proc send*(req: Request, code: HttpCode, body: string, headers="") =
   getData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
-proc send*(req: Request, code: HttpCode) {.inline.} =
+proc send*(req: Request, code: HttpCode) =
   ## Responds with the specified HttpCode. The body of the response
   ## is the same as the HttpCode description.
   req.send(code, $code)
@@ -443,11 +443,11 @@ proc body*(req: Request): Option[string] =
         0
     assert result.get.len == length
 
-proc ip*(req: Request): string {.inline.} =
+proc ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
   req.selector.getData(req.client).ip
 
-proc forget*(req: Request) {.inline.} =
+proc forget*(req: Request) =
   ## Unregisters the underlying request's client socket from httpx's
   ## event loop.
   ##
