@@ -12,16 +12,17 @@ import strformat, os, osproc, terminal, strutils
 
 
 var process: Process
-
 when defined(windows):
-  let code = execCmd("nim c -f --hints:off --verbosity=0 tests/start_server.nim")
-  if code != 0:
-    raise newException(IOError, "can't compile tests/start_server.nim")
+  if not fileExists("tests/start_server.exe"):
+    let code = execCmd("nim c --hints:off --verbosity=0 tests/start_server.nim")
+    if code != 0:
+      raise newException(IOError, "can't compile tests/start_server.nim")
   process = startProcess(expandFileName("tests/start_server.exe"))
 else:
-  let code = execCmd("nim c -f --hints:off -d:usestd tests/start_server.nim")
-  if code != 0:
-    raise newException(IOError, "can't compile tests/start_server.nim")
+  if not fileExists("tests/start_server"):
+    let code = execCmd("nim c --hints:off -d:usestd tests/start_server.nim")
+    if code != 0:
+      raise newException(IOError, "can't compile tests/start_server.nim")
   process = startProcess(expandFileName("tests/start_server"))
 
 proc start() {.async.} =
