@@ -9,6 +9,7 @@ srcDir = "src"
 
 # Dependencies
 
+
 requires "nim >= 1.2.0"
 requires "ioselectors >= 0.1.0"
 
