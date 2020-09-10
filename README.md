@@ -45,3 +45,10 @@ proc onRequest(req: Request): Future[void] =
 
 run(onRequest)
 ```
+
+## Websocket support
+https://github.com/xflywind/websocketx
+
+```
+nimble install https://github.com/xflywind/websocketx
+```
