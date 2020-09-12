@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.1.2"
 author        = "Zeshen Xing"
 description   = "A super-fast epoll-backed and parallel HTTP server."
 license       = "MIT"
@@ -10,7 +10,7 @@ srcDir = "src"
 # Dependencies
 
 
-requires "nim >= 1.2.0"
+requires "nim >= 1.2.6"
 requires "ioselectors >= 0.1.0"
 
 
