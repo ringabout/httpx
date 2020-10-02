@@ -45,8 +45,8 @@ type
 
   Data = object
     fdKind: FdKind ## Determines the fd kind (server, client, dispatcher)
-    ## - Client specific data.
-    ## A queue of data that needs to be sent when the FD becomes writeable.
+                   ## - Client specific data.
+                   ## A queue of data that needs to be sent when the FD becomes writeable.
     sendQueue: string
     ## The number of characters in `sendQueue` that have been sent already.
     bytesSent: int
@@ -73,20 +73,23 @@ type
     port*: Port
     bindAddr*: string
     numThreads: int
+    # maxBody: int ## The maximum content-length that will be read for the body.
 
 const
   serverInfo {.strdefine.} = "Nim-Httpx"
 
-proc initSettings*(port: Port = Port(8080),
-                   bindAddr: string = "",
-                   numThreads: int = 0): Settings =
+func initSettings*(port = Port(8080),
+                   bindAddr = "",
+                   numThreads = 0): Settings =
+                  #  maxBody: Natural = 8388608
   Settings(
     port: port,
     bindAddr: bindAddr,
     numThreads: numThreads,
+    # maxBody: maxBody
   )
 
-proc initData(fdKind: FdKind, ip = ""): Data =
+func initData(fdKind: FdKind, ip = ""): Data =
   Data(fdKind: fdKind,
        sendQueue: "",
        bytesSent: 0,
@@ -94,10 +97,10 @@ proc initData(fdKind: FdKind, ip = ""): Data =
        headersFinished: false,
        headersFinishPos: -1, ## By default we assume the fast case: end of data.
        ip: ip
-      )
+  )
 
 template handleAccept() =
-  let (client, address) = fd.SocketHandle.accept()
+  let (client, address) = fd.SocketHandle.accept
   if client == osInvalidSocket:
     let lastError = osLastError()
 
@@ -109,11 +112,11 @@ template handleAccept() =
     raiseOSError(lastError)
   setBlocking(client, false)
   selector.registerHandle(client, {Event.Read},
-                          initData(Client, ip=address))
+                          initData(Client, ip = address))
 
 template handleClientClosure(selector: Selector[Data],
                              fd: SocketHandle|int,
-                             inLoop=true) =
+                             inLoop = true) =
   # TODO: Logging that the socket was closed.
 
   # TODO: Can POST body be sent with Connection: Close?
@@ -139,19 +142,18 @@ template fastHeadersCheck(data: ptr Data): untyped =
 template methodNeedsBody(data: ptr Data): untyped =
   (
     # Only idempotent methods can be pipelined (GET/HEAD/PUT/DELETE), they
-    # never need a body, so we just assume `start` at 0.
-    let m = parseHttpMethod(data.data, start=0);
-    m.isSome() and m.get() in {HttpPost, HttpPut, HttpConnect, HttpPatch}
+      # never need a body, so we just assume `start` at 0.
+    let m = parseHttpMethod(data.data, start = 0);
+    m.isSome and (m.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
   )
 
 proc slowHeadersCheck(data: ptr Data): bool =
-  # TODO: See how this `unlikely` affects ASM.
   if unlikely(methodNeedsBody(data)):
     # Look for \c\l\c\l inside data.
     data.headersFinishPos = 0
     template ch(i): untyped =
       (
-        let pos = data.headersFinishPos+i;
+        let pos = data.headersFinishPos + i;
         if pos >= data.data.len: '\0' else: data.data[pos]
       )
     while data.headersFinishPos < data.data.len:
@@ -160,8 +162,9 @@ proc slowHeadersCheck(data: ptr Data): bool =
         if ch(1) == '\l' and ch(2) == '\c' and ch(3) == '\l':
           data.headersFinishPos.inc(4)
           return true
-      else: discard
-      data.headersFinishPos.inc()
+      else: 
+        discard
+      inc data.headersFinishPos
 
     data.headersFinishPos = -1
 
@@ -169,13 +172,14 @@ proc bodyInTransit(data: ptr Data): bool =
   assert methodNeedsBody(data), "Calling bodyInTransit now is inefficient."
   assert data.headersFinished
 
-  if data.headersFinishPos == -1: return false
+  if data.headersFinishPos == -1: 
+    return false
 
-  var trueLen = parseContentLength(data.data, start=0)
+  let trueLen = parseContentLength(data.data, start = 0)
 
   let bodyLen = data.data.len - data.headersFinishPos
   assert(not (bodyLen > trueLen))
-  return bodyLen != trueLen
+  result = bodyLen != trueLen
 
 proc validateRequest(req: Request): bool {.gcsafe.}
 
@@ -233,7 +237,7 @@ proc processEvents(selector: Selector[Data],
           # Write buffer to our data.
           let origLen = data.data.len
           data.data.setLen(origLen + ret)
-          for i in 0 ..< ret: 
+          for i in 0 ..< ret:
             data.data[origLen + i] = buf[i]
 
           if fastHeadersCheck(data) or slowHeadersCheck(data):
@@ -262,7 +266,7 @@ proc processEvents(selector: Selector[Data],
 
                 if validateRequest(request):
                   let fut = onRequest(request)
-                  if not fut.isNil:
+                  if fut != nil:
                     fut.callback =
                       proc (theFut: Future[void]) =
                         onRequestFutureComplete(theFut, selector, fd)
@@ -324,6 +328,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
   let selector = newSelector[Data]()
 
   let server = newSocket()
+
   server.setSockOpt(OptReuseAddr, true)
   server.setSockOpt(OptReusePort, true)
   server.bindAddr(settings.port, settings.bindAddr)
@@ -373,7 +378,7 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
   req.selector.getData(req.client).sendQueue.add(data)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
-proc send*(req: Request, code: HttpCode, body: string, headers="") =
+proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], headers = "") {.inline.} =
   ## Responds with the specified HttpCode and body.
   ##
   ## **Warning:** This can only be called once in the OnRequest callback.
@@ -382,25 +387,36 @@ proc send*(req: Request, code: HttpCode, body: string, headers="") =
     return
 
   # TODO: Reduce the amount of `getData` accesses.
-  template getData: var Data = 
+  template reqGetData(): var Data =
     req.selector.getData(req.client)
 
-  assert getData.headersFinished, "Selector not ready to send."
+  assert reqGetData().headersFinished, "Selector not ready to send."
 
-  let otherHeaders = 
-    if likely(headers.len == 0): 
+  let otherHeaders =
+    if likely(headers.len == 0):
       ""
-    else: 
+    else:
       "\c\L" & headers
 
-  var
-    text = (
-      "HTTP/1.1 $#\c\L" &
-      "Content-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-    ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
+  let text = 
+    if contentLength.isNone:
+      (
+        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+      ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
+    else:
+      (
+        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+      ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
 
-  getData.sendQueue.add(text)
+  reqGetData().sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
+
+template send*(req: Request, code: HttpCode, body: string, headers = "") =
+  ## Responds with the specified HttpCode and body.
+  ##
+  ## **Warning:** This can only be called once in the OnRequest callback.
+
+  req.send(code, body, none(string), headers)
 
 proc send*(req: Request, code: HttpCode) =
   ## Responds with the specified HttpCode. The body of the response
@@ -413,24 +429,27 @@ proc send*(req: Request, body: string, code = Http200) {.inline.} =
   ## **Warning:** This can only be called once in the OnRequest callback.
   req.send(code, body)
 
-proc httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
+func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
   ## Parses the request's data to find the request HttpMethod.
   parseHttpMethod(req.selector.getData(req.client).data, req.start)
 
-proc path*(req: Request): Option[string] {.inline.} =
+func path*(req: Request): Option[string] {.inline.} =
   ## Parses the request's data to find the request target.
-  if unlikely(req.client notin req.selector): return
+  if unlikely(req.client notin req.selector): 
+    return
   parsePath(req.selector.getData(req.client).data, req.start)
 
-proc headers*(req: Request): Option[HttpHeaders] =
+func headers*(req: Request): Option[HttpHeaders] =
   ## Parses the request's data to get the headers.
-  if unlikely(req.client notin req.selector): return
+  if unlikely(req.client notin req.selector): 
+    return
   parseHeaders(req.selector.getData(req.client).data, req.start)
 
-proc body*(req: Request): Option[string] =
+func body*(req: Request): Option[string] =
   ## Retrieves the body of the request.
   let pos = req.selector.getData(req.client).headersFinishPos
-  if pos == -1: return none(string)
+  if pos == -1: 
+    return none(string)
   result = req.selector.getData(req.client).data[
     pos .. ^1
   ].some()
@@ -441,9 +460,9 @@ proc body*(req: Request): Option[string] =
         req.headers.get["Content-Length"].parseInt
       else:
         0
-    assert result.get.len == length
+    doAssert result.get.len == length
 
-proc ip*(req: Request): string =
+func ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
   req.selector.getData(req.client).ip
 
@@ -478,12 +497,15 @@ proc run*(onRequest: OnRequest, settings: Settings) =
   ## for better performance, when no async operations are needed.
   when compileOption("threads"):
     let numThreads =
-      if settings.numThreads == 0: countProcessors()
-      else: settings.numThreads
+      if settings.numThreads == 0: 
+        countProcessors()
+      else: 
+        settings.numThreads
   else:
     let numThreads = 1
 
   logging.debug("Starting ", numThreads, " threads")
+  
   if numThreads > 1:
     when compileOption("threads"):
       var threads = newSeq[Thread[(OnRequest, Settings)]](numThreads)
@@ -491,10 +513,13 @@ proc run*(onRequest: OnRequest, settings: Settings) =
         createThread[(OnRequest, Settings)](
           threads[i], eventLoop, (onRequest, settings)
         )
-      logging.debug("Listening on port ", settings.port) # This line is used in the tester to signal readiness.
+      
+      logging.debug("Listening on port ",
+          settings.port) # This line is used in the tester to signal readiness.
+      
       joinThreads(threads)
     else:
-      assert false
+      doAssert false, "Please enable threads when numThreads is greater than 1!"
   else:
     eventLoop((onRequest, settings))
 
@@ -511,7 +536,7 @@ when false:
     ##
     ## **NOTE:** This is not yet implemented.
 
-    assert false
+    doAssert false
     # TODO: Figure out the best way to implement this. One way is to use async
     # events to signal our `eventLoop`. Maybe it would be better not to support
     # multiple servers running at the same time?

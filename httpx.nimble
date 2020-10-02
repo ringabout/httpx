@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.2"
+version       = "0.1.4"
 author        = "Zeshen Xing"
 description   = "A super-fast epoll-backed and parallel HTTP server."
 license       = "MIT"
