@@ -495,33 +495,38 @@ proc run*(onRequest: OnRequest, settings: Settings) =
   ## The ``onRequest`` procedure returns a ``Future[void]`` type. But
   ## unlike most asynchronous procedures in Nim, it can return ``nil``
   ## for better performance, when no async operations are needed.
-  when compileOption("threads"):
-    let numThreads =
-      if settings.numThreads == 0: 
-        countProcessors()
-      else: 
-        settings.numThreads
-  else:
-    let numThreads = 1
-
-  logging.debug("Starting ", numThreads, " threads")
-  
-  if numThreads > 1:
+  when not defined(windows):
     when compileOption("threads"):
-      var threads = newSeq[Thread[(OnRequest, Settings)]](numThreads)
-      for i in 0 ..< numThreads:
-        createThread[(OnRequest, Settings)](
-          threads[i], eventLoop, (onRequest, settings)
-        )
-      
-      logging.debug("Listening on port ",
-          settings.port) # This line is used in the tester to signal readiness.
-      
-      joinThreads(threads)
+      let numThreads =
+        if settings.numThreads == 0: 
+          countProcessors()
+        else: 
+          settings.numThreads
     else:
-      doAssert false, "Please enable threads when numThreads is greater than 1!"
+      let numThreads = 1
+
+    logging.debug("Starting ", numThreads, " threads")
+
+    if numThreads > 1:
+      when compileOption("threads"):
+        var threads = newSeq[Thread[(OnRequest, Settings)]](numThreads)
+        for i in 0 ..< numThreads:
+          createThread[(OnRequest, Settings)](
+            threads[i], eventLoop, (onRequest, settings)
+          )
+        
+        logging.debug("Listening on port ",
+            settings.port) # This line is used in the tester to signal readiness.
+        
+        joinThreads(threads)
+      else:
+        doAssert false, "Please enable threads when numThreads is greater than 1!"
+    else:
+      eventLoop((onRequest, settings))
   else:
     eventLoop((onRequest, settings))
+    logging.debug("Starting ", 1, " threads")
+
 
 proc run*(onRequest: OnRequest) {.inline.} =
   ## Starts the HTTP server with default settings. Calls `onRequest` for each
