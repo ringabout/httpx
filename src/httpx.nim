@@ -16,14 +16,14 @@
 # limitations under the License.
 
 
-import net, nativesockets, os, httpcore, asyncdispatch, strutils
-
-import options, logging
+import net, nativesockets, os, httpcore, asyncdispatch, strutils, options, logging, times
 
 from deques import len
-
+from osproc import countProcessors
 
 import ioselectors
+
+import httpx/parser
 
 
 when defined(windows):
@@ -31,13 +31,9 @@ when defined(windows):
 else:
   import posix
 
-from osproc import countProcessors
-
-import times
 
 export httpcore
 
-import httpx/parser
 
 type
   FdKind = enum
@@ -99,7 +95,7 @@ func initData(fdKind: FdKind, ip = ""): Data =
        ip: ip
   )
 
-template handleAccept() =
+template acceptClient() =
   let (client, address) = fd.SocketHandle.accept
   if client == osInvalidSocket:
     let lastError = osLastError()
@@ -114,15 +110,15 @@ template handleAccept() =
   selector.registerHandle(client, {Event.Read},
                           initData(Client, ip = address))
 
-template handleClientClosure(selector: Selector[Data],
+template closeClient(selector: Selector[Data],
                              fd: SocketHandle|int,
                              inLoop = true) =
-  # TODO: Logging that the socket was closed.
-
   # TODO: Can POST body be sent with Connection: Close?
 
   selector.unregister(fd)
-  fd.SocketHandle.close()
+  close(fd.SocketHandle)
+  logging.debug($fd & " is closed!")
+
   when inLoop:
     break
   else:
@@ -133,29 +129,30 @@ proc onRequestFutureComplete(theFut: Future[void],
   if theFut.failed:
     raise theFut.error
 
-template fastHeadersCheck(data: ptr Data): untyped =
-  (let res = data.data[^1] == '\l' and data.data[^2] == '\c' and
-             data.data[^3] == '\l' and data.data[^4] == '\c';
-   if res: data.headersFinishPos = data.data.len;
-   res)
+template fastHeadersCheck(data: ptr Data): bool =
+  let res = data.data[^1] == '\l' and data.data[^2] == '\c' and
+             data.data[^3] == '\l' and data.data[^4] == '\c'
+  if res: 
+    data.headersFinishPos = data.data.len
+  res
 
-template methodNeedsBody(data: ptr Data): untyped =
-  (
-    # Only idempotent methods can be pipelined (GET/HEAD/PUT/DELETE), they
-      # never need a body, so we just assume `start` at 0.
-    let m = parseHttpMethod(data.data, start = 0);
-    m.isSome and (m.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
-  )
+template methodNeedsBody(data: ptr Data): bool =
+  # Only idempotent methods can be pipelined (GET/HEAD/PUT/DELETE), they
+    # never need a body, so we just assume `start` at 0.
+  let m = parseHttpMethod(data.data, start = 0)
+  m.isSome and (m.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
 
 proc slowHeadersCheck(data: ptr Data): bool =
   if unlikely(methodNeedsBody(data)):
     # Look for \c\l\c\l inside data.
     data.headersFinishPos = 0
-    template ch(i): untyped =
-      (
-        let pos = data.headersFinishPos + i;
-        if pos >= data.data.len: '\0' else: data.data[pos]
-      )
+    template ch(i: int): char =
+      let pos = data.headersFinishPos + i
+      if pos >= data.data.len: 
+        '\0'
+      else:
+        data.data[pos]
+
     while data.headersFinishPos < data.data.len:
       case ch(0)
       of '\c':
@@ -169,6 +166,7 @@ proc slowHeadersCheck(data: ptr Data): bool =
     data.headersFinishPos = -1
 
 proc bodyInTransit(data: ptr Data): bool =
+  # get, head, put, delete
   assert methodNeedsBody(data), "Calling bodyInTransit now is inefficient."
   assert data.headersFinished
 
@@ -193,19 +191,22 @@ proc processEvents(selector: Selector[Data],
     if Event.Error in events[i].events:
       if isDisconnectionError({SocketFlag.SafeDisconn},
                               events[i].errorCode):
-        handleClientClosure(selector, fd)
+        closeClient(selector, fd)
       raiseOSError(events[i].errorCode)
 
     case data.fdKind
     of Server:
       if Event.Read in events[i].events:
-        handleAccept()
+        acceptClient()
       else:
         assert false, "Only Read events are expected for the server"
     of Dispatcher:
       # Run the dispatcher loop.
-      assert events[i].events == {Event.Read}
-      asyncdispatch.poll(0)
+      when defined(posix):
+        assert events[i].events == {Event.Read}
+        asyncdispatch.poll(0)
+      else:
+        discard
     of Client:
       if Event.Read in events[i].events:
         const size = 256
@@ -217,7 +218,7 @@ proc processEvents(selector: Selector[Data],
         while true:
           let ret = recv(fd.SocketHandle, addr buf[0], size, 0.cint)
           if ret == 0:
-            handleClientClosure(selector, fd)
+            closeClient(selector, fd)
 
           if ret == -1:
             # Error!
@@ -231,7 +232,7 @@ proc processEvents(selector: Selector[Data],
                 break
 
             if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
-              handleClientClosure(selector, fd)
+              closeClient(selector, fd)
             raiseOSError(lastError)
 
           # Write buffer to our data.
@@ -261,7 +262,7 @@ proc processEvents(selector: Selector[Data],
                   start: start
                 )
 
-                template validateResponse(): untyped =
+                template validateResponse() =
                   data.headersFinished = false
 
                 if validateRequest(request):
@@ -302,7 +303,7 @@ proc processEvents(selector: Selector[Data],
               break
 
           if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
-            handleClientClosure(selector, fd)
+            closeClient(selector, fd)
           raiseOSError(lastError)
 
         data.bytesSent.inc(ret)
@@ -323,11 +324,10 @@ proc updateDate(fd: AsyncFD): bool =
   serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
 
 proc eventLoop(params: (OnRequest, Settings)) =
-  let (onRequest, settings) = params
-
-  let selector = newSelector[Data]()
-
-  let server = newSocket()
+  let 
+    (onRequest, settings) = params
+    selector = newSelector[Data]()
+    server = newSocket()
 
   server.setSockOpt(OptReuseAddr, true)
   server.setSockOpt(OptReusePort, true)
@@ -336,31 +336,32 @@ proc eventLoop(params: (OnRequest, Settings)) =
   server.getFd.setBlocking(false)
   selector.registerHandle(server.getFd, {Event.Read}, initData(Server))
 
-  let disp = getGlobalDispatcher()
-
-  when defined(posix):
-    selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
-                          initData(Dispatcher))
-  else:
-    for h in disp.handles.items:
-      selector.registerHandle(nativesockets.SocketHandle(h), {Event.Read},
-                            initData(Dispatcher))
-
-
   # Set up timer to get current date/time.
   discard updateDate(0.AsyncFD)
   asyncdispatch.addTimer(1000, false, updateDate)
 
-  var events: array[64, ReadyKey]
-  while true:
-    let ret = selector.selectInto(-1, events)
-    processEvents(selector, events, ret, onRequest)
 
-    # Ensure callbacks list doesn't grow forever in asyncdispatch.
-    # See https://github.com/nim-lang/Nim/issues/7532.
-    # Not processing callbacks can also lead to exceptions being silently
-    # lost!
-    if unlikely(asyncdispatch.getGlobalDispatcher().callbacks.len > 0):
+  when defined(posix):
+    let disp = getGlobalDispatcher()
+    selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
+                          initData(Dispatcher))
+
+    var events: array[64, ReadyKey]
+    while true:
+      let ret = selector.selectInto(-1, events)
+      processEvents(selector, events, ret, onRequest)
+
+      # Ensure callbacks list doesn't grow forever in asyncdispatch.
+      # See https://github.com/nim-lang/Nim/issues/7532.
+      # Not processing callbacks can also lead to exceptions being silently
+      # lost!
+      if unlikely(asyncdispatch.getGlobalDispatcher().callbacks.len > 0):
+        asyncdispatch.poll(0)
+  else:
+    var events: array[64, ReadyKey]
+    while true:
+      let ret = selector.selectInto(100, events)
+      processEvents(selector, events, ret, onRequest)
       asyncdispatch.poll(0)
 
 #[ API start ]#
@@ -370,11 +371,11 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
   ##
   ## This function can be called as many times as necessary.
   ##
-  ## It does not
-  ## check whether the socket is in a state that can be written so be
-  ## careful when using it.
+  ## It does not check whether the socket is in a state
+  ## that can be written so be careful when using it.
   if req.client notin req.selector:
     return
+
   req.selector.getData(req.client).sendQueue.add(data)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
@@ -386,11 +387,10 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
   if req.client notin req.selector:
     return
 
-  # TODO: Reduce the amount of `getData` accesses.
   template reqGetData(): var Data =
     req.selector.getData(req.client)
 
-  assert reqGetData().headersFinished, "Selector not ready to send."
+  assert reqGetData.headersFinished, "Selector not ready to send."
 
   let otherHeaders =
     if likely(headers.len == 0):
@@ -408,7 +408,7 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
         "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
       ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
 
-  reqGetData().sendQueue.add(text)
+  reqGetData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
 template send*(req: Request, code: HttpCode, body: string, headers = "") =

@@ -1,6 +1,7 @@
 import options, json
 
-import httpx, asyncdispatch
+import ../src/httpx
+import asyncdispatch
 
 proc onRequest(req: Request): Future[void] =
   if req.httpMethod == some(HttpGet):
@@ -8,7 +9,7 @@ proc onRequest(req: Request): Future[void] =
     of "/json":
       const data = $(%*{"message": "Hello, World!"})
       req.send(Http200, data)
-    of "/plaintext":
+    of "/hello":
       const data = "Hello, World!"
       const headers = "Content-Type: text/plain"
       req.send(Http200, data, headers)

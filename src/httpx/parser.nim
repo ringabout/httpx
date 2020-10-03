@@ -143,10 +143,11 @@ iterator parseRequests*(data: string): int =
   var i = 0
   yield i
 
-  while i+3 < len(data):
+  while i + 3 < len(data):
     if data[i+0] == '\c' and data[i+1] == '\l' and
        data[i+2] == '\c' and data[i+3] == '\l':
-      if likely(i + 4 == len(data)): break
+      if likely(i + 4 == len(data)): 
+        break
       i.inc(4)
       if parseHttpMethod(data, i).isNone:
         continue
