@@ -11,7 +11,7 @@ srcDir = "src"
 
 
 requires "nim >= 1.2.6"
-requires "ioselectors >= 0.1.0"
+requires "ioselectors >= 0.1.6"
 
 
 task helloworld, "Compiles and executes the hello world server.":
