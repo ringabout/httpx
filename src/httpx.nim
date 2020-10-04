@@ -19,7 +19,6 @@
 import net, nativesockets, os, httpcore, asyncdispatch, strutils, options, logging, times
 
 from deques import len
-from osproc import countProcessors
 
 import ioselectors
 
@@ -30,6 +29,7 @@ when defined(windows):
   import sets
 else:
   import posix
+  from osproc import countProcessors
 
 
 export httpcore
@@ -69,24 +69,26 @@ type
     port*: Port
     bindAddr*: string
     numThreads: int
-    # maxBody: int ## The maximum content-length that will be read for the body.
 
 const
-  serverInfo {.strdefine.} = "Nim-Httpx"
+  serverInfo {.strdefine.} = "Nim-HTTPX"
+  clientBufSzie = 256
+
+var serverDate {.threadvar.}: string
+
 
 func initSettings*(port = Port(8080),
                    bindAddr = "",
-                   numThreads = 0): Settings =
-                  #  maxBody: Natural = 8388608
-  Settings(
+                   numThreads = 0
+): Settings =
+  result = Settings(
     port: port,
     bindAddr: bindAddr,
-    numThreads: numThreads,
-    # maxBody: maxBody
+    numThreads: numThreads
   )
 
 func initData(fdKind: FdKind, ip = ""): Data =
-  Data(fdKind: fdKind,
+  result = Data(fdKind: fdKind,
        sendQueue: "",
        bytesSent: 0,
        data: "",
@@ -94,6 +96,103 @@ func initData(fdKind: FdKind, ip = ""): Data =
        headersFinishPos: -1, ## By default we assume the fast case: end of data.
        ip: ip
   )
+
+#[ API start ]#
+
+proc unsafeSend*(req: Request, data: string) {.inline.} =
+  ## Sends the specified data on the request socket.
+  ##
+  ## This function can be called as many times as necessary.
+  ##
+  ## It does not check whether the socket is in a state
+  ## that can be written so be careful when using it.
+  if req.client notin req.selector:
+    return
+
+  req.selector.getData(req.client).sendQueue.add(data)
+  req.selector.updateHandle(req.client, {Event.Read, Event.Write})
+
+proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], headers = "") {.inline.} =
+  ## Responds with the specified HttpCode and body.
+  ##
+  ## **Warning:** This can only be called once in the OnRequest callback.
+
+  if req.client notin req.selector:
+    return
+
+  template reqGetData(): var Data =
+    req.selector.getData(req.client)
+
+  assert reqGetData.headersFinished, "Selector not ready to send."
+
+  let otherHeaders =
+    if likely(headers.len != 0):
+      "\c\L" & headers
+    else:
+      ""
+
+  let text = 
+    if contentLength.isNone:
+      (
+        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+      ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
+    else:
+      (
+        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+      ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
+
+  reqGetData.sendQueue.add(text)
+  req.selector.updateHandle(req.client, {Event.Read, Event.Write})
+
+proc send413*(req: Request, code: HttpCode, body: string, contentLength: Option[string], headers = "") {.inline.} =
+  ## Responds with the specified HttpCode and body.
+  ##
+  ## **Warning:** This can only be called once in the OnRequest callback.
+
+  if req.client notin req.selector:
+    return
+
+  template reqGetData(): var Data =
+    req.selector.getData(req.client)
+
+  assert reqGetData.headersFinished, "Selector not ready to send."
+
+  let otherHeaders =
+    if likely(headers.len != 0):
+      "\c\L" & headers
+    else:
+      ""
+
+  let text = 
+    if contentLength.isNone:
+      (
+        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+      ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
+    else:
+      (
+        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+      ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
+
+  reqGetData.sendQueue.add(text)
+  req.selector.updateHandle(req.client, {Event.Write})
+
+template send*(req: Request, code: HttpCode, body: string, headers = "") =
+  ## Responds with the specified HttpCode and body.
+  ##
+  ## **Warning:** This can only be called once in the OnRequest callback.
+
+  req.send(code, body, none(string), headers)
+
+proc send*(req: Request, code: HttpCode) =
+  ## Responds with the specified HttpCode. The body of the response
+  ## is the same as the HttpCode description.
+  req.send(code, $code)
+
+proc send*(req: Request, body: string, code = Http200) {.inline.} =
+  ## Sends a HTTP 200 OK response with the specified body.
+  ##
+  ## **Warning:** This can only be called once in the OnRequest callback.
+  req.send(code, body)
 
 template acceptClient() =
   let (client, address) = fd.SocketHandle.accept
@@ -139,8 +238,8 @@ template fastHeadersCheck(data: ptr Data): bool =
 template methodNeedsBody(data: ptr Data): bool =
   # Only idempotent methods can be pipelined (GET/HEAD/PUT/DELETE), they
     # never need a body, so we just assume `start` at 0.
-  let m = parseHttpMethod(data.data, start = 0)
-  m.isSome and (m.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
+  let reqMthod = parseHttpMethod(data.data, start = 0)
+  reqMthod.isSome and (reqMthod.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
 
 proc slowHeadersCheck(data: ptr Data): bool =
   if unlikely(methodNeedsBody(data)):
@@ -199,7 +298,7 @@ proc processEvents(selector: Selector[Data],
       if Event.Read in events[i].events:
         acceptClient()
       else:
-        assert false, "Only Read events are expected for the server"
+        doAssert false, "Only Read events are expected for the server"
     of Dispatcher:
       # Run the dispatcher loop.
       when defined(posix):
@@ -209,14 +308,13 @@ proc processEvents(selector: Selector[Data],
         discard
     of Client:
       if Event.Read in events[i].events:
-        const size = 256
-        var buf: array[size, char]
+        var buf: array[clientBufSzie, char]
         # Read until EAGAIN. We take advantage of the fact that the client
         # will wait for a response after they send a request. So we can
         # comfortably continue reading until the message ends with \c\l
         # \c\l.
         while true:
-          let ret = recv(fd.SocketHandle, addr buf[0], size, 0.cint)
+          let ret = recv(fd.SocketHandle, addr buf[0], clientBufSzie, 0.cint)
           if ret == 0:
             closeClient(selector, fd)
 
@@ -275,7 +373,7 @@ proc processEvents(selector: Selector[Data],
                   else:
                     validateResponse()
 
-          if ret != size:
+          if ret != clientBufSzie:
             # Assume there is nothing else for us right now and break.
             break
       elif Event.Write in events[i].events:
@@ -317,8 +415,6 @@ proc processEvents(selector: Selector[Data],
       else:
         assert false
 
-var serverDate {.threadvar.}: string
-
 proc updateDate(fd: AsyncFD): bool =
   result = false # Returning true signifies we want timer to stop.
   serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
@@ -340,7 +436,6 @@ proc eventLoop(params: (OnRequest, Settings)) =
   discard updateDate(0.AsyncFD)
   asyncdispatch.addTimer(1000, false, updateDate)
 
-
   when defined(posix):
     let disp = getGlobalDispatcher()
     selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
@@ -361,73 +456,9 @@ proc eventLoop(params: (OnRequest, Settings)) =
     var events: array[64, ReadyKey]
     while true:
       let ret = selector.selectInto(100, events)
-      processEvents(selector, events, ret, onRequest)
+      if ret > 0:
+        processEvents(selector, events, ret, onRequest)
       asyncdispatch.poll(0)
-
-#[ API start ]#
-
-proc unsafeSend*(req: Request, data: string) {.inline.} =
-  ## Sends the specified data on the request socket.
-  ##
-  ## This function can be called as many times as necessary.
-  ##
-  ## It does not check whether the socket is in a state
-  ## that can be written so be careful when using it.
-  if req.client notin req.selector:
-    return
-
-  req.selector.getData(req.client).sendQueue.add(data)
-  req.selector.updateHandle(req.client, {Event.Read, Event.Write})
-
-proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], headers = "") {.inline.} =
-  ## Responds with the specified HttpCode and body.
-  ##
-  ## **Warning:** This can only be called once in the OnRequest callback.
-
-  if req.client notin req.selector:
-    return
-
-  template reqGetData(): var Data =
-    req.selector.getData(req.client)
-
-  assert reqGetData.headersFinished, "Selector not ready to send."
-
-  let otherHeaders =
-    if likely(headers.len == 0):
-      ""
-    else:
-      "\c\L" & headers
-
-  let text = 
-    if contentLength.isNone:
-      (
-        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-      ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
-    else:
-      (
-        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-      ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
-
-  reqGetData.sendQueue.add(text)
-  req.selector.updateHandle(req.client, {Event.Read, Event.Write})
-
-template send*(req: Request, code: HttpCode, body: string, headers = "") =
-  ## Responds with the specified HttpCode and body.
-  ##
-  ## **Warning:** This can only be called once in the OnRequest callback.
-
-  req.send(code, body, none(string), headers)
-
-proc send*(req: Request, code: HttpCode) =
-  ## Responds with the specified HttpCode. The body of the response
-  ## is the same as the HttpCode description.
-  req.send(code, $code)
-
-proc send*(req: Request, body: string, code = Http200) {.inline.} =
-  ## Sends a HTTP 200 OK response with the specified body.
-  ##
-  ## **Warning:** This can only be called once in the OnRequest callback.
-  req.send(code, body)
 
 func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
   ## Parses the request's data to find the request HttpMethod.
@@ -450,9 +481,7 @@ func body*(req: Request): Option[string] =
   let pos = req.selector.getData(req.client).headersFinishPos
   if pos == -1: 
     return none(string)
-  result = req.selector.getData(req.client).data[
-    pos .. ^1
-  ].some()
+  result = some(req.selector.getData(req.client).data[pos .. ^1])
 
   when not defined(release):
     let length =
@@ -526,7 +555,6 @@ proc run*(onRequest: OnRequest, settings: Settings) =
   else:
     eventLoop((onRequest, settings))
     logging.debug("Starting ", 1, " threads")
-
 
 proc run*(onRequest: OnRequest) {.inline.} =
   ## Starts the HTTP server with default settings. Calls `onRequest` for each

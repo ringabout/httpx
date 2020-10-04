@@ -3,7 +3,7 @@
 version       = "0.1.6"
 author        = "Zeshen Xing"
 description   = "A super-fast epoll-backed and parallel HTTP server."
-license       = "MIT"
+license       = "Apache 2.0"
 
 srcDir = "src"
 
