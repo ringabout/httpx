@@ -69,6 +69,7 @@ type
     port*: Port
     bindAddr*: string
     numThreads: int
+    maxBody: int ## The maximum content-length that will be read for the body.
 
 const
   serverInfo {.strdefine.} = "Nim-HTTPX"
@@ -79,12 +80,14 @@ var serverDate {.threadvar.}: string
 
 func initSettings*(port = Port(8080),
                    bindAddr = "",
-                   numThreads = 0
+                   numThreads = 0,
+                   maxBody: Natural = 8388608
 ): Settings =
   result = Settings(
     port: port,
     bindAddr: bindAddr,
-    numThreads: numThreads
+    numThreads: numThreads,
+    maxBody: maxBody
   )
 
 func initData(fdKind: FdKind, ip = ""): Data =
@@ -232,15 +235,20 @@ proc slowHeadersCheck(data: ptr Data): bool =
 
     data.headersFinishPos = -1
 
-proc bodyInTransit(data: ptr Data): bool =
+proc bodyInTransit(data: ptr Data, maxBody: int, overLimitation: var bool): bool =
   # get, head, put, delete
   assert methodNeedsBody(data), "Calling bodyInTransit now is inefficient."
   assert data.headersFinished
+
+  overLimitation = false
 
   if data.headersFinishPos == -1: 
     return false
 
   let trueLen = parseContentLength(data.data, start = 0)
+
+  if trueLen > maxBody:
+    overLimitation = true
 
   let bodyLen = data.data.len - data.headersFinishPos
   assert(not (bodyLen > trueLen))
@@ -250,7 +258,8 @@ proc validateRequest(req: Request): bool {.gcsafe.}
 
 proc processEvents(selector: Selector[Data],
                    events: array[64, ReadyKey], count: int,
-                   onRequest: OnRequest) =
+                   onRequest: OnRequest,
+                   maxBody: int) =
   for i in 0 ..< count:
     let fd = events[i].fd
     var data: ptr Data = addr(getData(selector, fd))
@@ -281,6 +290,7 @@ proc processEvents(selector: Selector[Data],
         # will wait for a response after they send a request. So we can
         # comfortably continue reading until the message ends with \c\l
         # \c\l.
+        var overLimitation = false
         while true:
           let ret = recv(fd.SocketHandle, addr buf[0], clientBufSzie, 0.cint)
           if ret == 0:
@@ -302,48 +312,60 @@ proc processEvents(selector: Selector[Data],
             raiseOSError(lastError)
 
           # Write buffer to our data.
-          let origLen = data.data.len
-          data.data.setLen(origLen + ret)
-          for i in 0 ..< ret:
-            data.data[origLen + i] = buf[i]
+          if not overLimitation:
+            let origLen = data.data.len
+            data.data.setLen(origLen + ret)
+            for i in 0 ..< ret:
+              data.data[origLen + i] = buf[i]
 
-          if fastHeadersCheck(data) or slowHeadersCheck(data):
-            # First line and headers for request received.
-            data.headersFinished = true
-            when not defined(release):
-              if data.sendQueue.len != 0:
-                logging.warn("sendQueue isn't empty.")
-              if data.bytesSent != 0:
-                logging.warn("bytesSent isn't empty.")
+            if fastHeadersCheck(data) or slowHeadersCheck(data):
+              # First line and headers for request received.
+              data.headersFinished = true
+              when not defined(release):
+                if data.sendQueue.len != 0:
+                  logging.warn("sendQueue isn't empty.")
+                if data.bytesSent != 0:
+                  logging.warn("bytesSent isn't empty.")
 
-            let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
-            if likely(not waitingForBody):
-              for start in parseRequests(data.data):
-                # For pipelined requests, we need to reset this flag.
+              let waitingForBody = methodNeedsBody(data) and bodyInTransit(data, maxBody, overLimitation)
+
+              if likely(not waitingForBody):
+                for start in parseRequests(data.data):
+                  # For pipelined requests, we need to reset this flag.
+                  data.headersFinished = true
+
+                  let request = Request(
+                    selector: selector,
+                    client: fd.SocketHandle,
+                    start: start
+                  )
+
+                  template validateResponse() =
+                    data.headersFinished = false
+
+                  if validateRequest(request):
+                    let fut = onRequest(request)
+                    if fut != nil:
+                      fut.callback =
+                        proc (theFut: Future[void]) =
+                          onRequestFutureComplete(theFut, selector, fd)
+                          validateResponse()
+                    else:
+                      validateResponse()
+              elif overLimitation:
                 data.headersFinished = true
 
                 let request = Request(
-                  selector: selector,
-                  client: fd.SocketHandle,
-                  start: start
-                )
+                    selector: selector,
+                    client: fd.SocketHandle,
+                    start: 0
+                  )
 
-                template validateResponse() =
-                  data.headersFinished = false
+                request.send413(Http413, $Http413, none(string))
 
-                if validateRequest(request):
-                  let fut = onRequest(request)
-                  if fut != nil:
-                    fut.callback =
-                      proc (theFut: Future[void]) =
-                        onRequestFutureComplete(theFut, selector, fd)
-                        validateResponse()
-                  else:
-                    validateResponse()
-
-          if ret != clientBufSzie:
-            # Assume there is nothing else for us right now and break.
-            break
+            if ret != clientBufSzie:
+              # Assume there is nothing else for us right now and break.
+              break
       elif Event.Write in events[i].events:
         assert data.sendQueue.len > 0
         assert data.bytesSent < data.sendQueue.len
@@ -412,7 +434,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
     var events: array[64, ReadyKey]
     while true:
       let ret = selector.selectInto(-1, events)
-      processEvents(selector, events, ret, onRequest)
+      processEvents(selector, events, ret, onRequest, settings.maxBody)
 
       # Ensure callbacks list doesn't grow forever in asyncdispatch.
       # See https://github.com/nim-lang/Nim/issues/7532.
@@ -425,7 +447,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
     while true:
       let ret = selector.selectInto(100, events)
       if ret > 0:
-        processEvents(selector, events, ret, onRequest)
+        processEvents(selector, events, ret, onRequest, settings.maxBody)
       asyncdispatch.poll(0)
 
 func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
