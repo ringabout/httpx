@@ -63,12 +63,15 @@ type
     # Only used for HTTP pipelining.
     start: int
 
-  OnRequest* = proc (req: Request): Future[void] {.gcsafe.}
+  OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
+
+  Startup = proc () {.closure, gcsafe.}
 
   Settings* = object
     port*: Port
     bindAddr*: string
     numThreads: int
+    startup: Startup
 
 const
   serverInfo {.strdefine.} = "Nim-HTTPX"
@@ -76,15 +79,20 @@ const
 
 var serverDate {.threadvar.}: string
 
+proc doNothing(): Startup {.gcsafe.} =
+  result = proc () {.closure, gcsafe.} =
+    discard
 
 func initSettings*(port = Port(8080),
                    bindAddr = "",
-                   numThreads = 0
+                   numThreads = 0,
+                   startup: Startup,
 ): Settings =
   result = Settings(
     port: port,
     bindAddr: bindAddr,
-    numThreads: numThreads
+    numThreads: numThreads,
+    startup: startup
   )
 
 func initData(fdKind: FdKind, ip = ""): Data =
@@ -393,6 +401,8 @@ proc eventLoop(params: (OnRequest, Settings)) =
     selector = newSelector[Data]()
     server = newSocket()
 
+  settings.startup()
+
   server.setSockOpt(OptReuseAddr, true)
   server.setSockOpt(OptReusePort, true)
   server.bindAddr(settings.port, settings.bindAddr)
@@ -529,7 +539,7 @@ proc run*(onRequest: OnRequest) {.inline.} =
   ## request.
   ##
   ## See the other ``run`` proc for more info.
-  run(onRequest, Settings(port: Port(8080), bindAddr: ""))
+  run(onRequest, Settings(port: Port(8080), bindAddr: "", startup: doNothing()))
 
 when false:
   proc close*(port: Port) =
