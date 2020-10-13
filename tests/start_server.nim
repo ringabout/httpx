@@ -1,6 +1,6 @@
 import options, asyncdispatch, httpclient
 
-import httpx
+import ../src/httpx
 
 proc onRequest(req: Request) {.async.} =
   if req.httpMethod == some(HttpGet):

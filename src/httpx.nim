@@ -95,6 +95,17 @@ func initSettings*(port = Port(8080),
     startup: startup
   )
 
+func initSettings*(port = Port(8080),
+                   bindAddr = "",
+                   numThreads = 0
+): Settings =
+  result = Settings(
+    port: port,
+    bindAddr: bindAddr,
+    numThreads: numThreads,
+    startup: doNothing()
+  )
+
 func initData(fdKind: FdKind, ip = ""): Data =
   result = Data(fdKind: fdKind,
        sendQueue: "",
@@ -401,7 +412,8 @@ proc eventLoop(params: (OnRequest, Settings)) =
     selector = newSelector[Data]()
     server = newSocket()
 
-  settings.startup()
+  if settings.startup != nil:
+    settings.startup()
 
   server.setSockOpt(OptReuseAddr, true)
   server.setSockOpt(OptReusePort, true)
