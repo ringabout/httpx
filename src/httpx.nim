@@ -16,7 +16,8 @@
 # limitations under the License.
 
 
-import net, nativesockets, os, httpcore, asyncdispatch, strutils, options, logging, times
+import net, nativesockets, os, httpcore, asyncdispatch, strutils
+import options, logging, times, heapqueue, std/monotimes
 
 from deques import len
 
@@ -203,7 +204,7 @@ template closeClient(selector: Selector[Data],
 
   selector.unregister(fd)
   close(fd.SocketHandle)
-  logging.debug($fd & " is closed!")
+  logging.debug("file: " & $fd & " is closed!")
 
   when inLoop:
     break
@@ -425,9 +426,9 @@ proc eventLoop(params: (OnRequest, Settings)) =
   # Set up timer to get current date/time.
   discard updateDate(0.AsyncFD)
   asyncdispatch.addTimer(1000, false, updateDate)
+  let disp = getGlobalDispatcher()
 
   when defined(posix):
-    let disp = getGlobalDispatcher()
     selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
                           initData(Dispatcher))
 
@@ -445,7 +446,11 @@ proc eventLoop(params: (OnRequest, Settings)) =
   else:
     var events: array[64, ReadyKey]
     while true:
-      let ret = selector.selectInto(100, events)
+      let ret =
+        if disp.timers.len > 0:
+          selector.selectInto((disp.timers[0].finishAt - getMonoTime()).inMilliseconds.int, events)
+        else:
+          selector.selectInto(20, events)
       if ret > 0:
         processEvents(selector, events, ret, onRequest)
       asyncdispatch.poll(0)
