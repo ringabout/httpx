@@ -55,6 +55,10 @@ type
     headersFinishPos: int
     ## The address that a `client` connects from.
     ip: string
+    ## Future for onRequest handler (may be nil).
+    reqFut: Future[void]
+    ## Identifier for current request. Mainly for better detection of cross-talk.
+    requestID: uint
 
 type
   Request* = object
@@ -63,6 +67,8 @@ type
     # Determines where in the data buffer this request starts.
     # Only used for HTTP pipelining.
     start: int
+    # Identifier used to distinguish requests.
+    requestID: uint
 
   OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
 
@@ -73,6 +79,8 @@ type
     bindAddr*: string
     numThreads: int
     startup: Startup
+
+  HttpxDefect* = ref object of Defect
 
 const
   serverInfo {.strdefine.} = "Nim-HTTPX"
@@ -117,6 +125,11 @@ func initData(fdKind: FdKind, ip = ""): Data =
        ip: ip
   )
 
+
+template withRequestData(req: Request, body: untyped) =
+  let requestData {.inject.} = addr req.selector.getData(req.client)
+  body
+
 #[ API start ]#
 
 proc unsafeSend*(req: Request, data: string) {.inline.} =
@@ -129,7 +142,8 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
   if req.client notin req.selector:
     return
 
-  req.selector.getData(req.client).sendQueue.add(data)
+  withRequestData(req):
+    requestData.sendQueue.add(data)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
 proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], headers = "") {.inline.} =
@@ -140,28 +154,28 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
   if req.client notin req.selector:
     return
 
-  template reqGetData(): var Data =
-    req.selector.getData(req.client)
+  withRequestData(req):
+    assert requestData.headersFinished, "Selector not ready to send."
+    if requestData.requestID != req.requestID:
+      raise HttpxDefect(msg: "You are attempting to send data to a stale request.")
 
-  assert reqGetData.headersFinished, "Selector not ready to send."
+    let otherHeaders =
+      if likely(headers.len != 0):
+        "\c\L" & headers
+      else:
+        ""
 
-  let otherHeaders =
-    if likely(headers.len != 0):
-      "\c\L" & headers
-    else:
-      ""
+    let text =
+      if contentLength.isNone:
+        (
+          "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+        ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
+      else:
+        (
+          "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
+        ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
 
-  let text = 
-    if contentLength.isNone:
-      (
-        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-      ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
-    else:
-      (
-        "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-      ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
-
-  reqGetData.sendQueue.add(text)
+    requestData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
 template send*(req: Request, code: HttpCode, body: string, headers = "") =
@@ -174,6 +188,7 @@ template send*(req: Request, code: HttpCode, body: string, headers = "") =
 proc send*(req: Request, code: HttpCode) =
   ## Responds with the specified HttpCode. The body of the response
   ## is the same as the HttpCode description.
+  assert req.selector.getData(req.client).requestID == req.requestID
   req.send(code, $code)
 
 proc send*(req: Request, body: string, code = Http200) {.inline.} =
@@ -202,9 +217,23 @@ template closeClient(selector: Selector[Data],
                              inLoop = true) =
   # TODO: Can POST body be sent with Connection: Close?
 
-  selector.unregister(fd)
-  close(fd.SocketHandle)
-  logging.debug("file: " & $fd & " is closed!")
+  var data: ptr Data = addr selector.getData(fd)
+  let isRequestComplete = data.reqFut.isNil or data.reqFut.finished
+  if isRequestComplete:
+    # The `onRequest` callback isn't in progress, so we can close the socket.
+    selector.unregister(fd)
+    fd.SocketHandle.close()
+  else:
+    # Close the socket only once the `onRequest` callback completes.
+    data.reqFut.addCallback(
+      proc (fut: Future[void]) =
+        fd.SocketHandle.close()
+    )
+    # Unregister fd so that we don't receive any more events for it.
+    # Once we do so the `data` will no longer be accessible.
+    selector.unregister(fd)
+
+  logging.debug("socket: " & $fd & " is closed!")
 
   when inLoop:
     break
@@ -265,6 +294,13 @@ proc bodyInTransit(data: ptr Data): bool =
   let bodyLen = data.data.len - data.headersFinishPos
   assert(not (bodyLen > trueLen))
   result = bodyLen != trueLen
+
+var requestCounter: uint = 0
+proc genRequestID(): uint =
+  if requestCounter == high(uint):
+    requestCounter = 0
+  requestCounter += 1
+  return requestCounter
 
 proc validateRequest(req: Request): bool {.gcsafe.}
 
@@ -341,23 +377,27 @@ proc processEvents(selector: Selector[Data],
               for start in parseRequests(data.data):
                 # For pipelined requests, we need to reset this flag.
                 data.headersFinished = true
+                data.requestID = genRequestID()
 
                 let request = Request(
                   selector: selector,
                   client: fd.SocketHandle,
-                  start: start
+                  start: start,
+                  requestID: data.requestID
                 )
 
                 template validateResponse() =
-                  data.headersFinished = false
+                  if data.requestID == request.requestID:
+                    data.headersFinished = false
 
                 if validateRequest(request):
-                  let fut = onRequest(request)
-                  if fut != nil:
-                    fut.callback =
-                      proc (theFut: Future[void]) =
-                        onRequestFutureComplete(theFut, selector, fd)
+                  data.reqFut = onRequest(request)
+                  if not data.reqFut.isNil:
+                    data.reqFut.addCallback(
+                      proc (fut: Future[void]) =
+                        onRequestFutureComplete(fut, selector, fd)
                         validateResponse()
+                    )
                   else:
                     validateResponse()
 
