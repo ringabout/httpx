@@ -164,17 +164,24 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
         "\c\L" & headers
       else:
         ""
-
-    let text =
-      if contentLength.isNone:
-        (
-          "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-        ) % [$code, $body.len, serverInfo, serverDate, otherHeaders, body]
-      else:
-        (
-          "HTTP/1.1 $#\c\LContent-Length: $#\c\LServer: $#\c\LDate: $#$#\c\L\c\L$#"
-        ) % [$code, contentLength.get, serverInfo, serverDate, otherHeaders, body]
-
+  
+    var text = ""
+    template makeResponse(bodyLength: string) =
+        text &= "HTTP/1.1 "
+        text &= $code
+        text &= "\c\LContent-Length: "
+        text &= bodyLength
+        text &= "\c\LServer: "
+        text &= serverInfo
+        text &= "\c\LDate: "
+        text &= serverDate
+        text &= otherHeaders
+        text &= "\c\L\c\L"
+        text &= body
+    if contentLength.isSome:
+        makeResponse(contentLength.get())
+    else:
+        makeResponse($body.len)
     requestData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
