@@ -171,17 +171,16 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
         text &= $code
         text &= "\c\LContent-Length: "
         text &= bodyLength
-        text &= "\c\LServer: "
-        text &= serverInfo
+        text &= "\c\LServer: " & serverInfo
         text &= "\c\LDate: "
         text &= serverDate
         text &= otherHeaders
         text &= "\c\L\c\L"
         text &= body
-    if contentLength.isSome:
-        makeResponse(contentLength.get())
-    else:
+    if contentLength.isNone:
         makeResponse($body.len)
+    else:
+        makeResponse(contentLength.get)
     requestData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
