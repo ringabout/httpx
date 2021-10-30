@@ -167,20 +167,20 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
   
     var text = ""
     template makeResponse(bodyLength: string) =
-        text &= "HTTP/1.1 "
-        text &= $code
-        text &= "\c\LContent-Length: "
-        text &= bodyLength
-        text &= "\c\LServer: " & serverInfo
-        text &= "\c\LDate: "
-        text &= serverDate
-        text &= otherHeaders
-        text &= "\c\L\c\L"
-        text &= body
+      text &= "HTTP/1.1 "
+      text &= $code
+      text &= "\c\LContent-Length: "
+      text &= bodyLength
+      text &= "\c\LServer: " & serverInfo
+      text &= "\c\LDate: "
+      text &= serverDate
+      text &= otherHeaders
+      text &= "\c\L\c\L"
+      text &= body
     if contentLength.isNone:
-        makeResponse($body.len)
+      makeResponse($body.len)
     else:
-        makeResponse(contentLength.get)
+      makeResponse(contentLength.get)
     requestData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
