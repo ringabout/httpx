@@ -155,7 +155,7 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
     return
 
   withRequestData(req):
-    assert requestData.headersFinished, "Selector not ready to send."
+    # assert requestData.headersFinished, "Selector not ready to send."
     if requestData.requestID != req.requestID:
       raise HttpxDefect(msg: "You are attempting to send data to a stale request.")
 
