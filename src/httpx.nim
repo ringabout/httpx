@@ -369,7 +369,7 @@ proc processEvents(selector: Selector[Data],
           for i in 0 ..< ret:
             data.data[origLen + i] = buf[i]
 
-          if fastHeadersCheck(data) or slowHeadersCheck(data):
+          if data.data.len >= 4 and fastHeadersCheck(data) or slowHeadersCheck(data):
             # First line and headers for request received.
             data.headersFinished = true
             when not defined(release):
