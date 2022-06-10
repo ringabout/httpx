@@ -155,7 +155,7 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
     return
 
   withRequestData(req):
-    # assert requestData.headersFinished, "Selector not ready to send."
+    assert requestData.headersFinished, "Selector for $1 not ready to send." % $req.client.int
     if requestData.requestID != req.requestID:
       raise HttpxDefect(msg: "You are attempting to send data to a stale request.")
 
@@ -392,20 +392,21 @@ proc processEvents(selector: Selector[Data],
                   requestID: data.requestID
                 )
 
-                template validateResponse() =
+                template validateResponse(data: ptr Data): untyped =
                   if data.requestID == request.requestID:
                     data.headersFinished = false
 
                 if validateRequest(request):
                   data.reqFut = onRequest(request)
                   if not data.reqFut.isNil:
-                    data.reqFut.addCallback(
-                      proc (fut: Future[void]) =
-                        onRequestFutureComplete(fut, selector, fd)
-                        validateResponse()
-                    )
+                    capture data:
+                      data.reqFut.addCallback(
+                        proc (fut: Future[void]) =
+                          onRequestFutureComplete(fut, selector, fd)
+                          validateResponse(data)
+                      )
                   else:
-                    validateResponse()
+                    validateResponse(data)
 
           if ret != clientBufSzie:
             # Assume there is nothing else for us right now and break.
