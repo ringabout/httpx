@@ -18,6 +18,7 @@
 
 import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
+import std/sugar
 
 from deques import len
 
