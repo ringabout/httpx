@@ -27,7 +27,7 @@ import ioselectors
 import httpx/parser
 
 const useWinVersion   = defined(windows) or defined(nimdoc)
-const usePosixVersion = defined(posix)   and not defined(nimdoc)
+const usePosixVersion = defined(posix) and not defined(nimdoc)
 
 when useWinVersion:
   import sets
