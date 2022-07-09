@@ -26,8 +26,10 @@ import ioselectors
 
 import httpx/parser
 
+const useWinVersion   = defined(windows) or defined(nimdoc)
+const usePosixVersion = defined(posix) and not defined(nimdoc)
 
-when defined(windows):
+when useWinVersion:
   import sets
 else:
   import posix
@@ -209,7 +211,7 @@ template acceptClient() =
   if client == osInvalidSocket:
     let lastError = osLastError()
 
-    when defined(posix):
+    when usePosixVersion:
       if lastError.int32 == EMFILE:
         warn("Ignoring EMFILE error: ", osErrorMsg(lastError))
         return
@@ -332,7 +334,7 @@ proc processEvents(selector: Selector[Data],
         doAssert false, "Only Read events are expected for the server"
     of Dispatcher:
       # Run the dispatcher loop.
-      when defined(posix):
+      when usePosixVersion:
         assert events[i].events == {Event.Read}
         asyncdispatch.poll(0)
       else:
@@ -353,7 +355,7 @@ proc processEvents(selector: Selector[Data],
             # Error!
             let lastError = osLastError()
 
-            when defined(posix):
+            when usePosixVersion:
               if lastError.int32 in {EWOULDBLOCK, EAGAIN}:
                 break
             else:
@@ -418,7 +420,7 @@ proc processEvents(selector: Selector[Data],
         # Write the sendQueue.
 
         let leftover =
-          when defined(posix):
+          when usePosixVersion:
             data.sendQueue.len - data.bytesSent
           else:
             cint(data.sendQueue.len - data.bytesSent)
@@ -429,7 +431,7 @@ proc processEvents(selector: Selector[Data],
           # Error!
           let lastError = osLastError()
 
-          when defined(posix):
+          when usePosixVersion:
             if lastError.int32 in {EWOULDBLOCK, EAGAIN}:
               break
           else:
@@ -476,7 +478,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
   asyncdispatch.addTimer(1000, false, updateDate)
   let disp = getGlobalDispatcher()
 
-  when defined(posix):
+  when usePosixVersion:
     selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
                           initData(Dispatcher))
 
@@ -567,7 +569,7 @@ proc run*(onRequest: OnRequest, settings: Settings) =
   ## The ``onRequest`` procedure returns a ``Future[void]`` type. But
   ## unlike most asynchronous procedures in Nim, it can return ``nil``
   ## for better performance, when no async operations are needed.
-  when not defined(windows):
+  when not useWinVersion:
     when compileOption("threads"):
       let numThreads =
         if settings.numThreads == 0: 
