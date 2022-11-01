@@ -356,7 +356,7 @@ proc processEvents(selector: Selector[Data],
             let lastError = osLastError()
 
             when usePosixVersion:
-              if lastError.int32 in {EWOULDBLOCK, EAGAIN}:
+              if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
                 break
             else:
               if lastError.int == WSAEWOULDBLOCK:
