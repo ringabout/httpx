@@ -149,7 +149,7 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
     requestData.sendQueue.add(data)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
-proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], headers = "") {.inline.} =
+proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int], headers = "") {.inline.} =
   ## Responds with the specified HttpCode and body.
   ##
   ## **Warning:** This can only be called once in the OnRequest callback.
@@ -169,30 +169,30 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[str
         ""
   
     var text = ""
-    template makeResponse(bodyLength: string) =
-      text &= "HTTP/1.1 "
-      text &= $code
-      text &= "\c\LContent-Length: "
-      text &= bodyLength
-      text &= "\c\LServer: " & serverInfo
-      text &= "\c\LDate: "
-      text &= serverDate
-      text &= otherHeaders
-      text &= "\c\L\c\L"
-      text &= body
-    if contentLength.isNone:
-      makeResponse($body.len)
-    else:
-      makeResponse(contentLength.get)
+    text &= "HTTP/1.1 "
+    text.addInt code.int
+    text &= "\c\LContent-Length: "
+    text.addInt contentLength.get(body.len)
+    text &= "\c\LServer: " & serverInfo
+    text &= "\c\LDate: "
+    text &= serverDate
+    text &= otherHeaders
+    text &= "\c\L\c\L"
+    text &= body
+    
     requestData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
+
+proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], 
+           headers = "") {.inline, deprecated: "Use Option[int] contentLength".} =
+  req.send(code, body, some parseInt(contentLength.get($body.len)))
 
 template send*(req: Request, code: HttpCode, body: string, headers = "") =
   ## Responds with the specified HttpCode and body.
   ##
   ## **Warning:** This can only be called once in the OnRequest callback.
 
-  req.send(code, body, none(string), headers)
+  req.send(code, body, none(int), headers)
 
 proc send*(req: Request, code: HttpCode) =
   ## Responds with the specified HttpCode. The body of the response
