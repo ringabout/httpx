@@ -184,7 +184,7 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
 proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], 
-           headers = "") {.inline, deprecated: "Use Option[int] contentLength".} =
+           headers = "") {.inline, deprecated: "Use Option[int] for contentLength parameter".} =
   req.send(code, body, some parseInt(contentLength.get($body.len)))
 
 template send*(req: Request, code: HttpCode, body: string, headers = "") =
