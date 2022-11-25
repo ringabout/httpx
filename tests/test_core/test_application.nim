@@ -7,66 +7,52 @@ discard """
   timeout:  60.0
 """
 import httpclient, asyncdispatch, nativesockets
-import strformat, os, osproc, terminal, strutils
+import strformat, os, osproc, terminal, strutils, base64
+import uri
 
+import ../start_server
 
-var process: Process
-when defined(windows):
-  if not fileExists("tests/start_server.exe"):
-    let code = execCmd("nim c --hints:off --verbosity=0 tests/start_server.nim")
-    if code != 0:
-      raise newException(IOError, "can't compile tests/start_server.nim")
-  process = startProcess(expandFileName("tests/start_server.exe"))
-else:
-  if not fileExists("tests/start_server"):
-    let code = execCmd("nim c --hints:off -d:usestd tests/start_server.nim")
-    if code != 0:
-      raise newException(IOError, "can't compile tests/start_server.nim")
-  process = startProcess(expandFileName("tests/start_server"))
+proc expect(resp: Response, code: HttpCode, body: string) =
+  doAssert resp.code == code, $resp.code
+  doAssert resp.body == body, body
 
-proc start() {.async.} =
-  let address = "http://127.0.0.1:8080/content"
-  for i in 0 .. 20:
-    var client = newAsyncHttpClient()
-    styledEcho(fgBlue, "Getting ", address)
-    let fut = client.get(address)
-    yield fut or sleepAsync(4000)
-    if not fut.finished:
-      styledEcho(fgYellow, "Timed out")
-    elif not fut.failed:
-      styledEcho(fgGreen, "Server started!")
-      return
-    else: echo fut.error.msg
-    client.close()
+var serverThread: Thread[void]
 
-
-waitFor start()
-
+createThread(serverThread, proc () = run(onRequest))
 
 block:
   let
-    client = newAsyncHttpClient()
+    client = newHttpClient()
     address = "127.0.0.1"
     port = Port(8080)
-
+    root = parseUri(fmt"http://{address}:{port}")
+  sleep 100 # Give server some time to start
 
   # "can get /"
   block:
-    let
-      route = "/content"
-      response = waitFor client.get(fmt"http://{address}:{port}{route}")
-
-    doAssert response.code == Http200, $response.code
-    doAssert (waitFor response.body) == "Hi there!"
-
+    client.get(root / "content").expect(Http200, "Hi there!")
 
   # Simple POST
   block:
-    let
-      route = "/"
-      response = waitFor client.post(fmt"http://{address}:{port}{route}", body="hello")
-    
-    doAssert response.code == Http200
-    doAssert (waitFor response.body) == "Successful POST! Data=5"
+    client
+      .post(root, body="hello")
+      .expect(Http200, "Successful POST! Data=5")
+
+  # Can POST body have http method names in it
+  block issue13:
+    const body = """PUT-----------------------------232440040922467123362217795696
+Content-Disposition: form-data; name="request-type"
+
+PUT
+-----------------------------232440040922467123362217795696--"""
+    let headers = newHttpHeaders {
+      "Content-Type": "multipart/form-data; boundary=---------------------------180081423920632275152985699863",
+
+    }
+    client
+      .request(root / "issues/13", HttpPost, body = body, headers = headers)
+      .expect(Http200, "/issues/13")
+
 
   echo "done"
+  quit 0
