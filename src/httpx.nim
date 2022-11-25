@@ -67,9 +67,6 @@ type
   Request* = object
     selector: Selector[Data]
     client*: SocketHandle
-    # Determines where in the data buffer this request starts.
-    # Only used for HTTP pipelining.
-    start: int
     # Identifier used to distinguish requests.
     requestID: uint
 
@@ -264,7 +261,7 @@ template fastHeadersCheck(data: ptr Data): bool =
 template methodNeedsBody(data: ptr Data): bool =
   # Only idempotent methods can be pipelined (GET/HEAD/PUT/DELETE), they
     # never need a body, so we just assume `start` at 0.
-  let reqMthod = parseHttpMethod(data.data, start = 0)
+  let reqMthod = parseHttpMethod(data.data)
   reqMthod.isSome and (reqMthod.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
 
 proc slowHeadersCheck(data: ptr Data): bool =
@@ -298,7 +295,7 @@ proc bodyInTransit(data: ptr Data): bool =
   if data.headersFinishPos == -1: 
     return false
 
-  let trueLen = parseContentLength(data.data, start = 0)
+  let trueLen = parseContentLength(data.data)
 
   let bodyLen = data.data.len - data.headersFinishPos
   assert(not (bodyLen > trueLen))
@@ -383,33 +380,31 @@ proc processEvents(selector: Selector[Data],
 
             let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
             if likely(not waitingForBody):
-              for start in parseRequests(data.data):
-                # For pipelined requests, we need to reset this flag.
-                data.headersFinished = true
-                data.requestID = genRequestID()
+              # For pipelined requests, we need to reset this flag.
+              data.headersFinished = true
+              data.requestID = genRequestID()
 
-                let request = Request(
-                  selector: selector,
-                  client: fd.SocketHandle,
-                  start: start,
-                  requestID: data.requestID
-                )
+              let request = Request(
+                selector: selector,
+                client: fd.SocketHandle,
+                requestID: data.requestID
+              )
 
-                template validateResponse(data: ptr Data): untyped =
-                  if data.requestID == request.requestID:
-                    data.headersFinished = false
+              template validateResponse(data: ptr Data): untyped =
+                if data.requestID == request.requestID:
+                  data.headersFinished = false
 
-                if validateRequest(request):
-                  data.reqFut = onRequest(request)
-                  if not data.reqFut.isNil:
-                    capture data:
-                      data.reqFut.addCallback(
-                        proc (fut: Future[void]) =
-                          onRequestFutureComplete(fut, selector, fd)
-                          validateResponse(data)
-                      )
-                  else:
-                    validateResponse(data)
+              if validateRequest(request):
+                data.reqFut = onRequest(request)
+                if not data.reqFut.isNil:
+                  capture data:
+                    data.reqFut.addCallback(
+                      proc (fut: Future[void]) =
+                        onRequestFutureComplete(fut, selector, fd)
+                        validateResponse(data)
+                    )
+                else:
+                  validateResponse(data)
 
           if ret != clientBufSzie:
             # Assume there is nothing else for us right now and break.
@@ -507,19 +502,19 @@ proc eventLoop(params: (OnRequest, Settings)) =
 
 func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
   ## Parses the request's data to find the request HttpMethod.
-  parseHttpMethod(req.selector.getData(req.client).data, req.start)
+  parseHttpMethod(req.selector.getData(req.client).data)
 
 func path*(req: Request): Option[string] {.inline.} =
   ## Parses the request's data to find the request target.
   if unlikely(req.client notin req.selector): 
     return
-  parsePath(req.selector.getData(req.client).data, req.start)
+  parsePath(req.selector.getData(req.client).data)
 
 func headers*(req: Request): Option[HttpHeaders] =
   ## Parses the request's data to get the headers.
   if unlikely(req.client notin req.selector): 
     return
-  parseHeaders(req.selector.getData(req.client).data, req.start)
+  parseHeaders(req.selector.getData(req.client).data)
 
 func body*(req: Request): Option[string] =
   ## Retrieves the body of the request.

@@ -19,40 +19,40 @@
 import options, httpcore, parseutils
 
 
-func parseHttpMethod*(data: string, start: int): Option[HttpMethod] =
+func parseHttpMethod*(data: string): Option[HttpMethod] =
   ## Parses the data to find the request HttpMethod.
 
   # HTTP methods are case sensitive.
   # (RFC7230 3.1.1. "The request method is case-sensitive.")
-  case data[start]
+  case data[0]
   of 'G':
-    if data[start+1] == 'E' and data[start+2] == 'T':
+    if data[1] == 'E' and data[2] == 'T':
       result = some(HttpGet)
   of 'H':
-    if data[start+1] == 'E' and data[start+2] == 'A' and data[start+3] == 'D':
+    if data[1] == 'E' and data[2] == 'A' and data[3] == 'D':
       result = some(HttpHead)
   of 'P':
-    if data[start+1] == 'O' and data[start+2] == 'S' and data[start+3] == 'T':
+    if data[1] == 'O' and data[2] == 'S' and data[3] == 'T':
       result = some(HttpPost)
-    if data[start+1] == 'U' and data[start+2] == 'T':
+    if data[1] == 'U' and data[2] == 'T':
       result = some(HttpPut)
-    if data[start+1] == 'A' and data[start+2] == 'T' and
-       data[start+3] == 'C' and data[start+4] == 'H':
+    if data[1] == 'A' and data[2] == 'T' and
+       data[3] == 'C' and data[4] == 'H':
       result = some(HttpPatch)
   of 'D':
-    if data[start+1] == 'E' and data[start+2] == 'L' and
-       data[start+3] == 'E' and data[start+4] == 'T' and
-       data[start+5] == 'E':
+    if data[1] == 'E' and data[2] == 'L' and
+       data[3] == 'E' and data[4] == 'T' and
+       data[5] == 'E':
       result = some(HttpDelete)
   of 'O':
-    if data[start+1] == 'P' and data[start+2] == 'T' and
-       data[start+3] == 'I' and data[start+4] == 'O' and
-       data[start+5] == 'N' and data[start+6] == 'S':
+    if data[1] == 'P' and data[2] == 'T' and
+       data[3] == 'I' and data[4] == 'O' and
+       data[5] == 'N' and data[6] == 'S':
       result = some(HttpOptions)
   else:
     result = none(HttpMethod)
 
-func parsePath*(data: string, start: int): Option[string] =
+func parsePath*(data: string): Option[string] =
   ## Parses the request path from the specified data.
   if unlikely(data.len == 0):
     return
@@ -60,7 +60,7 @@ func parsePath*(data: string, start: int): Option[string] =
   # Find the first ' '.
   # We can actually start ahead a little here. Since we know
   # the shortest HTTP method: 'GET'/'PUT'.
-  var i = start + 2
+  var i = 2
   while data[i] notin {' ', '\0'}:
     inc i
 
@@ -76,13 +76,13 @@ func parsePath*(data: string, start: int): Option[string] =
   else:
     return none(string)
 
-func parseHeaders*(data: string, start: int): Option[HttpHeaders] =
+func parseHeaders*(data: string): Option[HttpHeaders] =
   if unlikely(data.len == 0):
     return
 
   var pairs: seq[(string, string)] = @[]
 
-  var i = start
+  var i = 0
   # Skip first line containing the method, path and HTTP version.
   while data[i] != '\l':
     inc i
@@ -122,10 +122,10 @@ func parseHeaders*(data: string, start: int): Option[HttpHeaders] =
 
   return none(HttpHeaders)
 
-func parseContentLength*(data: string, start: int): int =
+func parseContentLength*(data: string): int =
   result = 0
 
-  let headers = data.parseHeaders(start)
+  let headers = data.parseHeaders()
   if headers.isNone:
     return
 
@@ -133,24 +133,3 @@ func parseContentLength*(data: string, start: int): int =
     return
 
   discard headers.get["Content-Length"].parseSaturatedNatural(result)
-
-iterator parseRequests*(data: string): int =
-  ## Yields the start position of each request in `data`.
-  ##
-  ## This is only necessary for support of HTTP pipelining. The assumption
-  ## is that there is a request at position `0`, and that there MAY be another
-  ## request further in the data buffer.
-  var i = 0
-  yield i
-
-  while i + 3 < len(data):
-    if data[i+0] == '\c' and data[i+1] == '\l' and
-       data[i+2] == '\c' and data[i+3] == '\l':
-      if likely(i + 4 == len(data)): 
-        break
-      i.inc(4)
-      if parseHttpMethod(data, i).isNone:
-        continue
-      yield i
-
-    inc i
