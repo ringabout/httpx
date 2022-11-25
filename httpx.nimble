@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.3.3"
+version       = "0.3.4"
 author        = "Zeshen Xing"
 description   = "A super-fast epoll-backed and parallel HTTP server."
 license       = "Apache 2.0"
