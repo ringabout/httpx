@@ -17,5 +17,5 @@ proc onRequest(req: Request) {.async.} =
       req.send("Successful POST! Data=" & $req.body.get().len)
     else:
       req.send(Http404)
-
-run(onRequest)
+let settings = initSettings(numThreads = 1)
+run(onRequest, settings)
