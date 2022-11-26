@@ -7,7 +7,7 @@ discard """
   timeout:  60.0
 """
 import httpclient, asyncdispatch, nativesockets
-import strformat, os, osproc, terminal, strutils, base64
+import strformat, os, httpcore
 import uri
 
 import ../start_server
@@ -30,7 +30,10 @@ block:
 
   # "can get /"
   block:
-    client.get(root / "content").expect(Http200, "Hi there!")
+    const expectedBody = "Hi there!"
+    let resp = client.get(root / "content")
+    resp.expect(Http200, expectedBody)
+    doAssert resp.headers["Content-Length"] == $expectedBody.len
 
   # Simple POST
   block:
@@ -53,6 +56,10 @@ PUT
       .request(root / "issues/13", HttpPost, body = body, headers = headers)
       .expect(Http200, "/issues/13")
 
+  block allowNoContentLength:
+    let resp = client.request(root / "chunked")
+    resp.expect(Http200, "HelloWorld")
+    doAssert not resp.headers.hasKey("Content-Length")
 
   echo "done"
   quit 0

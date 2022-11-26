@@ -11,6 +11,8 @@ proc onRequest*(req: Request) {.async.} =
       req.send("Hi World!")
     of "/content":
       req.send("Hi there!")
+    of "/chunked":
+      req.send(Http200, "A\r\nHelloWorld\r\n0\r\n\r\n", none int, "Transfer-Encoding: chunked")
     else:
       req.send(Http404)
   of HttpPost:
