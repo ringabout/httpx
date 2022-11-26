@@ -132,6 +132,10 @@ template withRequestData(req: Request, body: untyped) =
 
 #[ API start ]#
 
+func closed*(req: Request): bool {.inline, raises: [].} =
+  ## If the client has disconnected from the server or not.
+  result = req.client notin req.selector
+
 proc unsafeSend*(req: Request, data: string) {.inline.} =
   ## Sends the specified data on the request socket.
   ##
@@ -139,7 +143,7 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
   ##
   ## It does not check whether the socket is in a state
   ## that can be written so be careful when using it.
-  if req.client notin req.selector:
+  if req.closed:
     return
 
   withRequestData(req):
@@ -151,7 +155,7 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
   ##
   ## **Warning:** This can only be called once in the OnRequest callback.
 
-  if req.client notin req.selector:
+  if req.closed:
     return
 
   withRequestData(req):
@@ -168,8 +172,9 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
     var text = ""
     text &= "HTTP/1.1 "
     text.addInt code.int
-    text &= "\c\LContent-Length: "
-    text.addInt contentLength.get(body.len)
+    if contentLength.isSome:
+      text &= "\c\LContent-Length: "
+      text.addInt contentLength.unsafeGet()
     text &= "\c\LServer: " & serverInfo
     text &= "\c\LDate: "
     text &= serverDate
@@ -180,16 +185,16 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
     requestData.sendQueue.add(text)
   req.selector.updateHandle(req.client, {Event.Read, Event.Write})
 
-proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string], 
+proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string],
            headers = "") {.inline, deprecated: "Use Option[int] for contentLength parameter".} =
-  req.send(code, body, some parseInt(contentLength.get($body.len)))
+  req.send(code, body, some parseInt(contentLength.get($body.len)), headers)
 
 template send*(req: Request, code: HttpCode, body: string, headers = "") =
   ## Responds with the specified HttpCode and body.
   ##
   ## **Warning:** This can only be called once in the OnRequest callback.
 
-  req.send(code, body, none(int), headers)
+  req.send(code, body, some body.len, headers)
 
 proc send*(req: Request, code: HttpCode) =
   ## Responds with the specified HttpCode. The body of the response
@@ -222,7 +227,6 @@ template closeClient(selector: Selector[Data],
                              fd: SocketHandle|int,
                              inLoop = true) =
   # TODO: Can POST body be sent with Connection: Close?
-
   var data: ptr Data = addr selector.getData(fd)
   let isRequestComplete = data.reqFut.isNil or data.reqFut.finished
   if isRequestComplete:
@@ -419,7 +423,6 @@ proc processEvents(selector: Selector[Data],
             data.sendQueue.len - data.bytesSent
           else:
             cint(data.sendQueue.len - data.bytesSent)
-
         let ret = send(fd.SocketHandle, addr data.sendQueue[data.bytesSent],
                        leftover, 0)
         if ret == -1:
@@ -506,13 +509,13 @@ func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
 
 func path*(req: Request): Option[string] {.inline.} =
   ## Parses the request's data to find the request target.
-  if unlikely(req.client notin req.selector): 
+  if unlikely(req.client notin req.selector):
     return
   parsePath(req.selector.getData(req.client).data)
 
 func headers*(req: Request): Option[HttpHeaders] =
   ## Parses the request's data to get the headers.
-  if unlikely(req.client notin req.selector): 
+  if unlikely(req.client notin req.selector):
     return
   parseHeaders(req.selector.getData(req.client).data)
 
