@@ -137,6 +137,9 @@ when httpxSendServerDate:
   # The date is updated every second from within the event loop.
   var serverDate {.threadvar.}: string
 
+let osMaxFdCount = selectors.maxDescriptors()
+  ## The maximum number of file descriptors allowed at one time by the OS
+
 proc doNothing(): Startup {.gcsafe.} =
   result = proc () {.closure, gcsafe.} =
     discard
@@ -252,7 +255,9 @@ proc send*(req: Request, body: string, code = Http200) {.inline.} =
   ## **Warning:** This can only be called once in the OnRequest callback.
   req.send(code, body)
 
-template acceptClient() =
+template tryAcceptClient() =
+  ## Tries to accept a client, but does nothing if one cannot be accepted (due to file descriptor exhaustion, etc)
+
   let (client, address) = fd.SocketHandle.accept
   if client == osInvalidSocket:
     let lastError = osLastError()
@@ -265,8 +270,10 @@ template acceptClient() =
     raiseOSError(lastError)
 
   setBlocking(client, false)
-  selector.registerHandle(client, {Event.Read},
-                          initData(Client, ip = address))
+
+  # Only register the handle if the file descriptor count has not been reached
+  if likely(client.int < osMaxFdCount):
+    selector.registerHandle(client, {Event.Read}, initData(Client, ip = address))
 
 template closeClient(selector: Selector[Data],
                              fd: SocketHandle|int,
@@ -375,13 +382,7 @@ proc processEvents(selector: Selector[Data],
     case data.fdKind
     of Server:
       if Event.Read in events[i].events:
-          try:
-            acceptClient()
-          except IOSelectorsException:
-            # Carry on without doing anything if the maximum number of descriptors is exhausted; hopefully there will be some available next tick
-            # termer 2023/03/20: There is no better way to check this error at the moment. The only way to differentiate descriptor exhaustion from other selector errors is based on its error message.
-            if getCurrentExceptionMsg() != "Maximum number of descriptors is exhausted!":
-              raise
+          tryAcceptClient()
       else:
         doAssert false, "Only Read events are expected for the server"
     of Dispatcher:
@@ -543,7 +544,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
       # See https://github.com/nim-lang/Nim/issues/7532.
       # Not processing callbacks can also lead to exceptions being silently
       # lost!
-      if unlikely(asyncdispatch.getGlobalDispatcher().callbacks.len > 0):
+      if unlikely(disp.callbacks.len > 0):
         asyncdispatch.poll(0)
   else:
     var events: array[64, ReadyKey]
