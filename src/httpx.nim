@@ -65,22 +65,38 @@ type
 
 type
   Request* = object
+    ## An HTTP request
+
     selector: Selector[Data]
+
     client*: SocketHandle
+      ## The underlying operating system socket handle associated with the request client connection.
+      ## May be closed; you should check by calling "closed" on this Request object before interacting with its client socket.
+
     # Identifier used to distinguish requests.
     requestID: uint
 
   OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
+    ## Callback used to handle HTTP requests
 
   Startup = proc () {.closure, gcsafe.}
 
   Settings* = object
+    ## HTTP server settings
+    
     port*: Port
+      ## The port to bind to
+
     bindAddr*: string
+      ## The address to bind to
+
     numThreads: int
+      ## The number of threads to serve on
+
     startup: Startup
 
   HttpxDefect* = ref object of Defect
+    ## Defect raised when something HTTPX-specific fails
 
 const httpxDefaultServerName* = "Nim-HTTPX"
   ## The default server name sent in the Server header in responses.
@@ -111,7 +127,14 @@ when httpxClientBufSize < 3:
 elif httpxClientBufSize < httpxClientBufDefaultSize:
   {.warning: "You should set your client read buffer size to at least 256 bytes. Smaller buffers will harm performance.".}
 
-var serverDate {.threadvar.}: string
+const httpxSendServerDate* {.booldefine.} = true
+  ## Whether to send the current server date along with requests.
+  ## Defaults to true.
+
+when httpxSendServerDate:
+  # We store the current server date here as a thread var and update it periodically to avoid checking the date each time we respond to a request.
+  # The date is updated every second from within the event loop.
+  var serverDate {.threadvar.}: string
 
 proc doNothing(): Startup {.gcsafe.} =
   result = proc () {.closure, gcsafe.} =
@@ -120,24 +143,15 @@ proc doNothing(): Startup {.gcsafe.} =
 func initSettings*(port = Port(8080),
                    bindAddr = "",
                    numThreads = 0,
-                   startup: Startup,
+                   startup: Startup = doNothing(),
 ): Settings =
+  ## Creates a new HTTP server Settings object with the provided options.
+
   result = Settings(
     port: port,
     bindAddr: bindAddr,
     numThreads: numThreads,
     startup: startup
-  )
-
-func initSettings*(port = Port(8080),
-                   bindAddr = "",
-                   numThreads = 0
-): Settings =
-  result = Settings(
-    port: port,
-    bindAddr: bindAddr,
-    numThreads: numThreads,
-    startup: doNothing()
   )
 
 func initData(fdKind: FdKind, ip = ""): Data =
@@ -204,7 +218,9 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
     when httpxServerName != "":
       text &= "\c\LServer: " & httpxServerName
     
-    text &= "\c\LDate: " & serverDate
+    when httpxSendServerDate:
+      text &= "\c\LDate: " & serverDate
+    
     text &= otherHeaders
     text &= "\c\L\c\L"
     text &= body
@@ -486,9 +502,10 @@ proc processEvents(selector: Selector[Data],
       else:
         assert false
 
-proc updateDate(fd: AsyncFD): bool =
-  result = false # Returning true signifies we want timer to stop.
-  serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+when httpxSendServerDate:
+  proc updateDate(fd: AsyncFD): bool =
+    result = false # Returning true signifies we want timer to stop.
+    serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
 
 proc eventLoop(params: (OnRequest, Settings)) =
   let 
@@ -506,9 +523,11 @@ proc eventLoop(params: (OnRequest, Settings)) =
   server.getFd.setBlocking(false)
   selector.registerHandle(server.getFd, {Event.Read}, initData(Server))
 
-  # Set up timer to get current date/time.
-  discard updateDate(0.AsyncFD)
-  asyncdispatch.addTimer(1000, false, updateDate)
+  when httpxSendServerDate:
+    # Set up timer to get current date/time.
+    discard updateDate(0.AsyncFD)
+    asyncdispatch.addTimer(1000, false, updateDate)
+
   let disp = getGlobalDispatcher()
 
   when usePosixVersion:
