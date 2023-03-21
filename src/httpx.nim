@@ -389,7 +389,7 @@ proc processEvents(selector: Selector[Data],
     case data.fdKind
     of Server:
       if Event.Read in events[i].events:
-          tryAcceptClient()
+        tryAcceptClient()
       else:
         doAssert false, "Only Read events are expected for the server"
     of Dispatcher:
