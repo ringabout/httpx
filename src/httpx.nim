@@ -271,9 +271,16 @@ template tryAcceptClient() =
 
   setBlocking(client, false)
 
-  # Only register the handle if the file descriptor count has not been reached
-  if likely(client.int < osMaxFdCount):
+  template regHandle() =
     selector.registerHandle(client, {Event.Read}, initData(Client, ip = address))
+
+  when usePosixVersion:
+    # Only register the handle if the file descriptor count has not been reached
+    if likely(client.int < osMaxFdCount):
+      regHandle()
+  else:
+    regHandle()
+    
 
 template closeClient(selector: Selector[Data],
                              fd: SocketHandle|int,
