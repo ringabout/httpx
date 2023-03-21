@@ -16,6 +16,26 @@
 # limitations under the License.
 
 
+
+
+
+
+
+
+
+
+# TODO Set max headers size via constant that can be defined at compile time aas well
+
+
+
+
+
+
+
+
+
+
+
 import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
 import std/sugar
@@ -433,8 +453,7 @@ proc processEvents(selector: Selector[Data],
               if data.bytesSent != 0:
                 logging.warn("bytesSent isn't empty.")
 
-            #let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
-            let waitingForBody = false
+            let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
             if likely(not waitingForBody):
               # For pipelined requests, we need to reset this flag.
               data.headersFinished = true
