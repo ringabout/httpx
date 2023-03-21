@@ -82,9 +82,34 @@ type
 
   HttpxDefect* = ref object of Defect
 
-const
-  serverInfo {.strdefine.} = "Nim-HTTPX"
-  clientBufSzie = 256
+const httpxDefaultServerName* = "Nim-HTTPX"
+  ## The default server name sent in the Server header in responses.
+  ## A custom name can be set by defining httpxServerName at compile time.
+
+const serverInfo {.strdefine.}: string = httpxDefaultServerName
+  ## Alias to httpxServerName, use that instead
+
+const httpxServerName* {.strdefine.} =
+  when serverInfo != httpxDefaultServerName:
+    {.warning: "Setting the server name with serverInfo is deprecated. You should use httpxServerName instead.".}
+    serverInfo
+  else:
+    httpxDefaultServerName
+  ## The server name sent in the Server header in responses.
+  ## If not defined, the value of httpxDefaultServerName will be used.
+
+const httpxClientBufDefaultSize* = 256
+  ## The default size of the client read buffer.
+  ## A custom size can be set by defining httpxClientBufSize.
+
+const httpxClientBufSize* {.intdefine.} = httpxClientBufDefaultSize
+  ## The size of the client read buffer.
+  ## Defaults to httpxClientBufDefaultSize.
+
+when httpxClientBufSize < 3:
+  {.fatal: "Client buffer size must be at least 3, and ideally at least 256.".}
+elif httpxClientBufSize < httpxClientBufDefaultSize:
+  {.warning: "You should set your client read buffer size to at least 256 bytes. Smaller buffers will harm performance.".}
 
 var serverDate {.threadvar.}: string
 
@@ -176,8 +201,8 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
       text &= "\c\LContent-Length: "
       text.addInt contentLength.unsafeGet()
     
-    when serverInfo != "":
-      text &= "\c\LServer: " & serverInfo
+    when httpxServerName != "":
+      text &= "\c\LServer: " & httpxServerName
     
     text &= "\c\LDate: " & serverDate
     text &= otherHeaders
@@ -351,13 +376,13 @@ proc processEvents(selector: Selector[Data],
         discard
     of Client:
       if Event.Read in events[i].events:
-        var buf: array[clientBufSzie, char]
+        var buf: array[httpxClientBufSize, char]
         # Read until EAGAIN. We take advantage of the fact that the client
         # will wait for a response after they send a request. So we can
         # comfortably continue reading until the message ends with \c\l
         # \c\l.
         while true:
-          let ret = recv(fd.SocketHandle, addr buf[0], clientBufSzie, 0.cint)
+          let ret = recv(fd.SocketHandle, addr buf[0], httpxClientBufSize, 0.cint)
           if ret == 0:
             closeClient(selector, fd)
 
@@ -391,7 +416,8 @@ proc processEvents(selector: Selector[Data],
               if data.bytesSent != 0:
                 logging.warn("bytesSent isn't empty.")
 
-            let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
+            #let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
+            let waitingForBody = false
             if likely(not waitingForBody):
               # For pipelined requests, we need to reset this flag.
               data.headersFinished = true
@@ -419,7 +445,7 @@ proc processEvents(selector: Selector[Data],
                 else:
                   validateResponse(data)
 
-          if ret != clientBufSzie:
+          if ret != httpxClientBufSize:
             # Assume there is nothing else for us right now and break.
             break
       elif Event.Write in events[i].events:
