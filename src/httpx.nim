@@ -137,8 +137,10 @@ when httpxSendServerDate:
   # The date is updated every second from within the event loop.
   var serverDate {.threadvar.}: string
 
-let osMaxFdCount = selectors.maxDescriptors()
-  ## The maximum number of file descriptors allowed at one time by the OS
+
+when usePosixVersion:
+  let osMaxFdCount = selectors.maxDescriptors()
+    ## The maximum number of file descriptors allowed at one time by the OS
 
 proc doNothing(): Startup {.gcsafe.} =
   result = proc () {.closure, gcsafe.} =
