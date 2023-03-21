@@ -333,7 +333,13 @@ proc processEvents(selector: Selector[Data],
     case data.fdKind
     of Server:
       if Event.Read in events[i].events:
-          acceptClient()
+          try:
+            acceptClient()
+          except IOSelectorsException:
+            # Carry on without doing anything if the maximum number of descriptors is exhausted; hopefully there will be some available next tick
+            # termer 2023/03/20: There is no better way to check this error at the moment. The only way to differentiate descriptor exhaustion from other selector errors is based on its error message.
+            if getCurrentExceptionMsg() != "Maximum number of descriptors is exhausted!":
+              raise
       else:
         doAssert false, "Only Read events are expected for the server"
     of Dispatcher:
