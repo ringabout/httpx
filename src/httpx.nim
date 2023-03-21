@@ -113,6 +113,7 @@ const httpxServerName* {.strdefine.} =
     httpxDefaultServerName
   ## The server name sent in the Server header in responses.
   ## If not defined, the value of httpxDefaultServerName will be used.
+  ## If the value is empty, no Server header will be sent.
 
 const httpxClientBufDefaultSize* = 256
   ## The default size of the client read buffer.
