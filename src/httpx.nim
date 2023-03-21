@@ -16,6 +16,11 @@
 # limitations under the License.
 
 
+# TODO Allow compilation with -d:threadsafe
+# TODO Create configurable constant for max headers size
+# TODO Expose body as async stream
+
+
 import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
 import std/sugar
@@ -35,9 +40,11 @@ else:
   import posix
   from osproc import countProcessors
 
-
 export httpcore
 
+const httpxUseStreams* {.booldefine.} = true
+  ## Whether to expose stream APIs using FutureStream instead of buffering requests and responses internally.
+  ## Defaults to true.
 
 type
   FdKind = enum
@@ -73,8 +80,15 @@ type
       ## The underlying operating system socket handle associated with the request client connection.
       ## May be closed; you should check by calling "closed" on this Request object before interacting with its client socket.
 
+    contentLength*: Option[BiggestUInt]
+      ## The request's content length, or none if no Content-Length header was provided
+
     # Identifier used to distinguish requests.
     requestID: uint
+
+    readStream: FutureStream[string]
+
+    writeStream: FutureStream[string]
 
   OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
     ## Callback used to handle HTTP requests
@@ -410,6 +424,7 @@ proc processEvents(selector: Selector[Data],
         # \c\l.
         while true:
           let ret = recv(fd.SocketHandle, addr buf[0], httpxClientBufSize, 0.cint)
+
           if ret == 0:
             closeClient(selector, fd)
 
@@ -443,7 +458,9 @@ proc processEvents(selector: Selector[Data],
               if data.bytesSent != 0:
                 logging.warn("bytesSent isn't empty.")
 
+            # TODO UNCOMMENT THIS
             let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
+            #let waitingForBody = false
             if likely(not waitingForBody):
               # For pipelined requests, we need to reset this flag.
               data.headersFinished = true
