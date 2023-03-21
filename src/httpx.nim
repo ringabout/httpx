@@ -16,26 +16,6 @@
 # limitations under the License.
 
 
-
-
-
-
-
-
-
-
-# TODO Set max headers size via constant that can be defined at compile time aas well
-
-
-
-
-
-
-
-
-
-
-
 import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
 import std/sugar
