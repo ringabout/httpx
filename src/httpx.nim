@@ -175,9 +175,11 @@ proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int
     if contentLength.isSome:
       text &= "\c\LContent-Length: "
       text.addInt contentLength.unsafeGet()
-    text &= "\c\LServer: " & serverInfo
-    text &= "\c\LDate: "
-    text &= serverDate
+    
+    when serverInfo != "":
+      text &= "\c\LServer: " & serverInfo
+    
+    text &= "\c\LDate: " & serverDate
     text &= otherHeaders
     text &= "\c\L\c\L"
     text &= body
@@ -219,6 +221,7 @@ template acceptClient() =
         return
 
     raiseOSError(lastError)
+
   setBlocking(client, false)
   selector.registerHandle(client, {Event.Read},
                           initData(Client, ip = address))
@@ -330,7 +333,7 @@ proc processEvents(selector: Selector[Data],
     case data.fdKind
     of Server:
       if Event.Read in events[i].events:
-        acceptClient()
+          acceptClient()
       else:
         doAssert false, "Only Read events are expected for the server"
     of Dispatcher:
