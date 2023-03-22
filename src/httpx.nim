@@ -42,7 +42,7 @@ else:
 
 export httpcore
 
-const httpxUseStreams* {.booldefine.} = true
+const httpxUseStreams* {.booldefine.} = false
   ## Whether to expose stream APIs using FutureStream instead of buffering requests and responses internally.
   ## Defaults to true.
 
@@ -75,6 +75,7 @@ type
     ## An HTTP request
 
     selector: Selector[Data]
+      ## The internal selector used to communicate with the client socket
 
     client*: SocketHandle
       ## The underlying operating system socket handle associated with the request client connection.
@@ -83,12 +84,18 @@ type
     contentLength*: Option[BiggestUInt]
       ## The request's content length, or none if no Content-Length header was provided
 
-    # Identifier used to distinguish requests.
     requestID: uint
+      ## Identifier used to distinguish requests
 
-    readStream: FutureStream[string]
+    when httpxUseStreams:
+      requestBodyStream*: Option[FutureStream[string]]
+        ## The request's body stream, or none if the request does not (or cannot) have a body.
+        ## Through this stream, a request body can be streamed without buffering its entirety to memory.
+        ## Useful for file uploads and similar.
 
-    writeStream: FutureStream[string]
+      responseBodyStream*: FutureStream[string]
+        ## The response's body stream.
+        ## Useful for writing responses with an unknown size, such as data that is being generated on the fly.
 
   OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
     ## Callback used to handle HTTP requests
@@ -137,6 +144,7 @@ const httpxClientBufSize* {.intdefine.} = httpxClientBufDefaultSize
   ## The size of the client read buffer.
   ## Defaults to httpxClientBufDefaultSize.
 
+# Ensure client buffer size meets the minimum, and warn on unrealistically tiny values
 when httpxClientBufSize < 3:
   {.fatal: "Client buffer size must be at least 3, and ideally at least 256.".}
 elif httpxClientBufSize < httpxClientBufDefaultSize:
@@ -202,6 +210,11 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
   ##
   ## It does not check whether the socket is in a state
   ## that can be written so be careful when using it.
+  
+  when httpxUseStreams:
+    # When streams are enabled, you should
+    {.deprecated: "Use the responseBodyStream property on Request instead".}
+
   if req.closed:
     return
 
@@ -488,9 +501,9 @@ proc processEvents(selector: Selector[Data],
                 else:
                   validateResponse(data)
 
-          if ret != httpxClientBufSize:
-            # Assume there is nothing else for us right now and break.
-            break
+          #if ret != httpxClientBufSize:
+          #  # Assume there is nothing else for us right now and break.
+          #  break
       elif Event.Write in events[i].events:
         assert data.sendQueue.len > 0
         assert data.bytesSent < data.sendQueue.len
