@@ -17,6 +17,7 @@ proc onRequest(req: Request): Future[void] =
         echo "Late"
       asyncCheck doThing()
       #poll(0)
+      echo "GOT REQUEST"
       req.send(Http200, data, headers)
     else:
       req.send(Http404)
