@@ -46,6 +46,17 @@ const httpxUseStreams* {.booldefine.} = false
   ## Whether to expose stream APIs using FutureStream instead of buffering requests and responses internally.
   ## Defaults to true.
 
+const httpxMaxStreamQueueSize* {.intdefine.} = 4
+  ## The maximum number of buffers to queue in request body streams.
+  ## Defaults to 4.
+  ## 
+  ## To calculate the maximum request body queue size in bytes, multiply this value with the value of httpxClientBufSize.
+  ## 
+  ## Note that this has no effect on response body streams, as user-defined handlers are in charge of writing to them, and therefore cannot be directly governed by this constant.
+
+when httpxMaxStreamQueueSize < 1:
+  {.fatal: "Max stream queue size must be at least 1".}
+
 type
   FdKind = enum
     Server, Client, Dispatcher

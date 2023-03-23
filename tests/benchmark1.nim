@@ -4,19 +4,15 @@ import ../src/httpx
 import asyncdispatch
 
 proc onRequest(req: Request): Future[void] =
-  #if req.httpMethod == some(HttpGet):
+  if true or req.httpMethod == some(HttpGet):
     case req.path.get()
     of "/json":
       const data = $(%*{"message": "Hello, World!"})
       req.send(Http200, data)
-    of "/hello":
-      let data = $req.body.get().len
+    of "/plaintext":
+      let data = req.body.get()[^20..^1]
+      #const data = "Hello, World!"
       const headers = "Content-Type: text/plain"
-      proc doThing() {.async.} =
-        await sleepAsync(1000)
-        echo "Late"
-      asyncCheck doThing()
-      #poll(0)
       req.send(Http200, data, headers)
     else:
       req.send(Http404)
