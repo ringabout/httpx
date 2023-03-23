@@ -21,9 +21,8 @@
 # TODO Expose body as async stream
 
 
-import net, nativesockets, os, httpcore, asyncdispatch, strutils
+import std/[net, nativesockets, os, httpcore, asyncdispatch, strutils, sugar, asyncstreams]
 import options, logging, times, heapqueue, std/monotimes
-import std/sugar
 
 from deques import len
 
@@ -42,7 +41,7 @@ else:
 
 export httpcore
 
-const httpxUseStreams* {.booldefine.} = false
+const httpxUseStreams* {.booldefine.} = true
   ## Whether to expose stream APIs using FutureStream instead of buffering requests and responses internally.
   ## Defaults to true.
 
@@ -80,6 +79,10 @@ type
     reqFut: Future[void]
     ## Identifier for current request. Mainly for better detection of cross-talk.
     requestID: uint
+
+    when httpxUseStreams:
+      bodyStream: FutureStream[string]
+        ## The request body stream
 
 type
   Request* = object
@@ -193,14 +196,16 @@ func initSettings*(port = Port(8080),
     startup: startup
   )
 
-func initData(fdKind: FdKind, ip = ""): Data =
-  result = Data(fdKind: fdKind,
-       sendQueue: "",
-       bytesSent: 0,
-       data: "",
-       headersFinished: false,
-       headersFinishPos: -1, ## By default we assume the fast case: end of data.
-       ip: ip
+func initData(fdKind: FdKind, ip = ""): Data {.inline.} =
+  return Data(
+    fdKind: fdKind,
+    sendQueue: "",
+    bytesSent: 0,
+    data: "",
+    headersFinished: false,
+    headersFinishPos: -1, ## By default we assume the fast case: end of data.
+    ip: ip,
+    bodyStream: newFutureStream[string]()
   )
 
 
@@ -446,6 +451,9 @@ proc processEvents(selector: Selector[Data],
         # will wait for a response after they send a request. So we can
         # comfortably continue reading until the message ends with \c\l
         # \c\l.
+
+        echo "ENTER LOOP"
+
         while true:
           let ret = recv(fd.SocketHandle, addr buf[0], httpxClientBufSize, 0.cint)
 
@@ -467,11 +475,25 @@ proc processEvents(selector: Selector[Data],
               closeClient(selector, fd)
             raiseOSError(lastError)
 
-          # Write buffer to our data.
-          let origLen = data.data.len
-          data.data.setLen(origLen + ret)
-          for i in 0 ..< ret:
-            data.data[origLen + i] = buf[i]
+          template writeBuf() =
+            # Write buffer to our data
+            let origLen = data.data.len
+            data.data.setLen(origLen + ret)
+            for i in 0 ..< ret:
+              data.data[origLen + i] = buf[i]
+          
+          when httpxUseStreams:
+            if data.headersFinished:
+              var chunk = newString(ret)
+              for i in 0 ..< ret:
+                chunk[i] = buf[i]
+
+              # TODO Figure out how to handle this
+              await data.bodyStream.write(chunk)
+            else:
+              writeBuf()
+          else:
+            writeBuf()
 
           if data.data.len >= 4 and fastHeadersCheck(data) or slowHeadersCheck(data):
             # First line and headers for request received.
@@ -512,9 +534,9 @@ proc processEvents(selector: Selector[Data],
                 else:
                   validateResponse(data)
 
-          #if ret != httpxClientBufSize:
-          #  # Assume there is nothing else for us right now and break.
-          #  break
+          if ret != httpxClientBufSize:
+            # Assume there is nothing else for us right now and break.
+            break
       elif Event.Write in events[i].events:
         assert data.sendQueue.len > 0
         assert data.bytesSent < data.sendQueue.len

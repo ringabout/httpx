@@ -10,7 +10,7 @@ proc onRequest(req: Request): Future[void] =
       const data = $(%*{"message": "Hello, World!"})
       req.send(Http200, data)
     of "/plaintext":
-      let data = req.body.get()[^20..^1]
+      let data = $req.body.get().len
       #const data = "Hello, World!"
       const headers = "Content-Type: text/plain"
       req.send(Http200, data, headers)
