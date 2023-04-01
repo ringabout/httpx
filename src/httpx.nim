@@ -490,10 +490,10 @@ proc processEvents(selector: Selector[Data],
           echo "WHILE TRUE LOOP TOP"
 
           # If the request body stream queue is full, wait until it stops being full
-          # when httpxUseStreams:
-          #   if unlikely(data.bodyStream.len >= httpxMaxStreamQueueSize):
-          #     echo "BREAK"
-          #     break
+          when httpxUseStreams:
+            if unlikely(data.bodyStream.len >= httpxMaxStreamQueueSize):
+              echo "BREAK"
+              break
 
           echo "Waiting on RECV..."
           let ret = recv(fd.SocketHandle, addr buf[0], httpxClientBufSize, 0.cint)
@@ -606,9 +606,7 @@ proc processEvents(selector: Selector[Data],
                 for i in 0 ..< ret:
                   chunk[i] = buf[i]
 
-                # TODO Figure out better workaround
-                if likely(not data.bodyStream.finished):
-                  asyncCheck data.bodyStream.write(chunk)
+                asyncCheck data.bodyStream.write(chunk)
                 data.bodyBytesRead += ret.BiggestUInt
                 echo "WROTE, NOW SIZE: " & $data.bodyBytesRead
 
