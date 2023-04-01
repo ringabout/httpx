@@ -19,7 +19,7 @@
 # TODO Allow compilation with -d:threadsafe
 # TODO Create configurable constant for max headers size
 # TODO Expose body as async stream
-
+# TODO Only parse content-length once, then store it in Data (Valgrind says it's one of the most expensive functions to call)
 
 import std/[net, nativesockets, os, httpcore, asyncdispatch, strutils, sugar, asyncstreams]
 import options, logging, times, heapqueue, std/monotimes
@@ -80,9 +80,15 @@ type
     ## Identifier for current request. Mainly for better detection of cross-talk.
     requestID: uint
 
+    contentLength: Option[BiggestUInt]
+      ## The request's content length, or none if headers have not been read yet
+
     when httpxUseStreams:
       bodyStream: FutureStream[string]
         ## The request body stream
+      
+      bodyBytesRead: BiggestUInt
+        ## The number of body bytes that have been read
 
 type
   Request* = object
@@ -369,8 +375,8 @@ template fastHeadersCheck(data: ptr Data): bool =
 template methodNeedsBody(data: ptr Data): bool =
   # Only idempotent methods can be pipelined (GET/HEAD/PUT/DELETE), they
     # never need a body, so we just assume `start` at 0.
-  let reqMthod = parseHttpMethod(data.data)
-  reqMthod.isSome and (reqMthod.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
+  let reqMethod = parseHttpMethod(data.data)
+  likely(reqMethod.isSome) and (reqMethod.get in {HttpPost, HttpPut, HttpConnect, HttpPatch})
 
 proc slowHeadersCheck(data: ptr Data): bool =
   if unlikely(methodNeedsBody(data)):
@@ -403,9 +409,16 @@ proc bodyInTransit(data: ptr Data): bool =
   if data.headersFinishPos == -1: 
     return false
 
-  let trueLen = parseContentLength(data.data)
+  if unlikely(data.contentLength.isNone):
+    data.contentLength = some(parseContentLength(data.data))
 
-  let bodyLen = data.data.len - data.headersFinishPos
+  let trueLen = data.contentLength.unsafeGet
+
+  let bodyLen = when httpxUseStreams:
+    data.bodyBytesRead
+  else:
+    data.data.len - data.headersFinishPos
+
   assert(not (bodyLen > trueLen))
   result = bodyLen != trueLen
 
@@ -452,12 +465,29 @@ proc processEvents(selector: Selector[Data],
         # comfortably continue reading until the message ends with \c\l
         # \c\l.
 
-        echo "ENTER LOOP"
+        ##debugEcho "ENTER LOOP"
+
+        # TODO ABC
+        if fd.SocketHandle notin selector:
+          ##debugEcho "DONE, CLOSED"
+
+        let disp = getGlobalDispatcher()
 
         while true:
+          when httpxUseStreams:
+            # Wait until body stream queue size falls below the maximum
+            if unlikely(data.bodyStream.len > httpxMaxStreamQueueSize):
+              continue
+
           let ret = recv(fd.SocketHandle, addr buf[0], httpxClientBufSize, 0.cint)
 
+          echo "RECV: " & $ret
+
           if ret == 0:
+            if likely(not data.bodyStream.finished):
+              # TODO Use error like "RequestClosedError"
+              data.bodyStream.fail(newException(ValueError, "TEST"))
+
             closeClient(selector, fd)
 
           if ret == -1:
@@ -475,6 +505,36 @@ proc processEvents(selector: Selector[Data],
               closeClient(selector, fd)
             raiseOSError(lastError)
 
+          template createRequest() =
+            # For pipelined requests, we need to reset this flag.
+            data.headersFinished = true
+            data.requestID = genRequestID()
+
+            let request = Request(
+              selector: selector,
+              client: fd.SocketHandle,
+              requestID: data.requestID,
+              requestBodyStream: some(data.bodyStream),
+            )
+
+            ##debugEcho "Created request"
+
+            template validateResponse(data: ptr Data): untyped =
+              if data.requestID == request.requestID:
+                data.headersFinished = false
+
+            if validateRequest(request):
+              data.reqFut = onRequest(request)
+              if not data.reqFut.isNil:
+                capture data:
+                  data.reqFut.addCallback(
+                    proc (fut: Future[void]) =
+                      onRequestFutureComplete(fut, selector, fd)
+                      validateResponse(data)
+                  )
+              else:
+                validateResponse(data)
+
           template writeBuf() =
             # Write buffer to our data
             let origLen = data.data.len
@@ -488,14 +548,21 @@ proc processEvents(selector: Selector[Data],
               for i in 0 ..< ret:
                 chunk[i] = buf[i]
 
-              # TODO Figure out how to handle this
-              await data.bodyStream.write(chunk)
+              ##debugEcho $disp.timers.len
+              if unlikely(disp.callbacks.len > 0 or disp.timers.len > 0):
+                ##debugEcho "POLL"
+                asyncdispatch.poll(0)
+
+              # Write the bytes to the stream queue
+              # We don't need to worry about overfilling the stream because there's a check for the queue size at the beginning of the loop
+              asyncCheck data.bodyStream.write(chunk)
+              data.bodyBytesRead += ret.BiggestUint
             else:
               writeBuf()
           else:
             writeBuf()
 
-          if data.data.len >= 4 and fastHeadersCheck(data) or slowHeadersCheck(data):
+          if data.data.len >= 4 and (fastHeadersCheck(data) or slowHeadersCheck(data)):
             # First line and headers for request received.
             data.headersFinished = true
             when not defined(release):
@@ -504,40 +571,27 @@ proc processEvents(selector: Selector[Data],
               if data.bytesSent != 0:
                 logging.warn("bytesSent isn't empty.")
 
+            if data.bodyBytesRead == 0:
+              createRequest()
+              ##debugEcho "CREATED REQUEST"
+
             # TODO UNCOMMENT THIS
             let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
             #let waitingForBody = false
             if likely(not waitingForBody):
-              # For pipelined requests, we need to reset this flag.
-              data.headersFinished = true
-              data.requestID = genRequestID()
+              data.bodyStream.complete()
 
-              let request = Request(
-                selector: selector,
-                client: fd.SocketHandle,
-                requestID: data.requestID
-              )
-
-              template validateResponse(data: ptr Data): untyped =
-                if data.requestID == request.requestID:
-                  data.headersFinished = false
-
-              if validateRequest(request):
-                data.reqFut = onRequest(request)
-                if not data.reqFut.isNil:
-                  capture data:
-                    data.reqFut.addCallback(
-                      proc (fut: Future[void]) =
-                        onRequestFutureComplete(fut, selector, fd)
-                        validateResponse(data)
-                    )
-                else:
-                  validateResponse(data)
+              when not httpxUseStreams:
+                createRequest()
 
           if ret != httpxClientBufSize:
             # Assume there is nothing else for us right now and break.
+            ##debugEcho "BROKE OUT BECAUSE SIZE: " & $ret
+            ##debugEcho buf.join("")
             break
       elif Event.Write in events[i].events:
+        ##debugEcho "WRITE"
+
         assert data.sendQueue.len > 0
         assert data.bytesSent < data.sendQueue.len
         # Write the sendQueue.

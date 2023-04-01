@@ -24,6 +24,7 @@ func parseHttpMethod*(data: string): Option[HttpMethod] =
 
   # HTTP methods are case sensitive.
   # (RFC7230 3.1.1. "The request method is case-sensitive.")
+  
   case data[0]
   of 'G':
     if data[1] == 'E' and data[2] == 'T':
@@ -122,7 +123,7 @@ func parseHeaders*(data: string): Option[HttpHeaders] =
 
   return none(HttpHeaders)
 
-func parseContentLength*(data: string): int =
+func parseContentLength*(data: string): BiggestUInt =
   result = 0
 
   let headers = data.parseHeaders()
@@ -132,4 +133,4 @@ func parseContentLength*(data: string): int =
   if unlikely(not headers.get.hasKey("Content-Length")):
     return
 
-  discard headers.get["Content-Length"].parseSaturatedNatural(result)
+  discard headers.get["Content-Length"].parseBiggestUInt(result)
