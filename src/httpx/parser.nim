@@ -24,7 +24,6 @@ func parseHttpMethod*(data: string): Option[HttpMethod] =
 
   # HTTP methods are case sensitive.
   # (RFC7230 3.1.1. "The request method is case-sensitive.")
-  
   case data[0]
   of 'G':
     if data[1] == 'E' and data[2] == 'T':

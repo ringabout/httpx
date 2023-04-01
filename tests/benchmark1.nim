@@ -12,8 +12,8 @@ proc onRequest(req: Request): Future[void] {.async.} =
       const headers = "Content-Type: text/plain"
 
       # TODO REMOVE THIS
-      req.send(Http200, "Hello, World!", headers)
-      return
+      # req.send(Http200, "Hello, World!", headers)
+      # return
 
       var len = 0
 
