@@ -25,7 +25,7 @@ import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
 import std/sugar
 
-from deques import len
+import deques
 
 import ioselectors
 
@@ -46,7 +46,7 @@ const httpxUseStreams* {.booldefine.} = true
   ## Whether to expose stream APIs using FutureStream instead of buffering requests and responses internally.
   ## Defaults to true.
 
-const httpxMaxStreamQueueSize* {.intdefine.} = 4
+const httpxMaxStreamQueueLength* {.intdefine.} = 4
   ## The maximum number of buffers to queue in request body streams.
   ## Defaults to 4.
   ## 
@@ -54,94 +54,8 @@ const httpxMaxStreamQueueSize* {.intdefine.} = 4
   ## 
   ## Note that this has no effect on response body streams, as user-defined handlers are in charge of writing to them, and therefore cannot be directly governed by this constant.
 
-when httpxMaxStreamQueueSize < 1:
-  {.fatal: "Max stream queue size must be at least 1".}
-
-type
-  FdKind = enum
-    Server, Client, Dispatcher
-
-  Data = object
-    fdKind: FdKind ## Determines the fd kind (server, client, dispatcher)
-                   ## - Client specific data.
-                   ## A queue of data that needs to be sent when the FD becomes writeable.
-    sendQueue: string
-    ## The number of characters in `sendQueue` that have been sent already.
-    bytesSent: int
-    ## Big chunk of data read from client during request.
-    data: string
-    ## Determines whether `data` contains "\c\l\c\l".
-    headersFinished: bool
-    ## Determines position of the end of "\c\l\c\l".
-    headersFinishPos: int
-    ## The address that a `client` connects from.
-    ip: string
-    ## Future for onRequest handler (may be nil).
-    reqFut: Future[void]
-    ## Identifier for current request. Mainly for better detection of cross-talk.
-    requestID: uint
-
-    contentLength: Option[BiggestUInt]
-      ## The request's content length, or none if it has no body or headers haven't been read yet
-
-    when httpxUseStreams:
-      createdRequest: bool
-        ## Whether a request for the data has been created
-
-      bodyStream: FutureStream[string]
-        ## The request body stream that will be written to when data is received
-      
-      bodyBytesRead: BiggestUInt
-        ## The number of bytes from the request body that have been read
-
-type
-  Request* = object
-    ## An HTTP request
-
-    selector: Selector[Data]
-      ## The internal selector used to communicate with the client socket
-
-    client*: SocketHandle
-      ## The underlying operating system socket handle associated with the request client connection.
-      ## May be closed; you should check by calling "closed" on this Request object before interacting with its client socket.
-
-    contentLength*: Option[BiggestUInt]
-      ## The request's content length, or none if no Content-Length header was provided
-
-    requestID: uint
-      ## Identifier used to distinguish requests
-
-    when httpxUseStreams:
-      requestBodyStream*: Option[FutureStream[string]]
-        ## The request's body stream, or none if the request does not (or cannot) have a body.
-        ## Through this stream, a request body can be streamed without buffering its entirety to memory.
-        ## Useful for file uploads and similar.
-
-      responseBodyStream*: FutureStream[string]
-        ## The response's body stream.
-        ## Useful for writing responses with an unknown size, such as data that is being generated on the fly.
-
-  OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
-    ## Callback used to handle HTTP requests
-
-  Startup = proc () {.closure, gcsafe.}
-
-  Settings* = object
-    ## HTTP server settings
-    
-    port*: Port
-      ## The port to bind to
-
-    bindAddr*: string
-      ## The address to bind to
-
-    numThreads: int
-      ## The number of threads to serve on
-
-    startup: Startup
-
-  HttpxDefect* = ref object of Defect
-    ## Defect raised when something HTTPX-specific fails
+when httpxMaxStreamQueueLength < 1:
+  {.fatal: "Max stream queue length must be at least 1".}
 
 const httpxDefaultServerName* = "Nim-HTTPX"
   ## The default server name sent in the Server header in responses.
@@ -177,6 +91,99 @@ elif httpxClientBufSize < httpxClientBufDefaultSize:
 const httpxSendServerDate* {.booldefine.} = true
   ## Whether to send the current server date along with requests.
   ## Defaults to true.
+
+when httpxUseStreams:
+  import httpx/streams
+
+type
+  FdKind = enum
+    Server, Client, Dispatcher
+
+  Data = object
+    fdKind: FdKind ## Determines the fd kind (server, client, dispatcher)
+                   ## - Client specific data.
+                   ## A queue of data that needs to be sent when the FD becomes writeable.
+    sendQueue: string
+    ## The number of characters in `sendQueue` that have been sent already.
+    bytesSent: int
+    ## Big chunk of data read from client during request.
+    data: string
+    ## Determines whether `data` contains "\c\l\c\l".
+    headersFinished: bool
+    ## Determines position of the end of "\c\l\c\l".
+    headersFinishPos: int
+    ## The address that a `client` connects from.
+    ip: string
+    ## Future for onRequest handler (may be nil).
+    reqFut: Future[void]
+    ## Identifier for current request. Mainly for better detection of cross-talk.
+    requestID: uint
+
+    contentLength: Option[BiggestUInt]
+      ## The request's content length, or none if it has no body or headers haven't been read yet
+
+    when httpxUseStreams:
+      createdRequest: bool
+        ## Whether a request for the data has been created
+
+      bodyStream: RequestBodyStream
+        ## The request body queue
+      
+      isBodyFinished: bool
+        ## Whether the request body was read entirely
+      
+      bodyBytesRead: BiggestUInt
+        ## The number of bytes from the request body that have been read
+
+type
+  Request* = object
+    ## An HTTP request
+
+    selector: Selector[Data]
+      ## The internal selector used to communicate with the client socket
+
+    client*: SocketHandle
+      ## The underlying operating system socket handle associated with the request client connection.
+      ## May be closed; you should check by calling "closed" on this Request object before interacting with its client socket.
+
+    contentLength*: Option[BiggestUInt]
+      ## The request's content length, or none if no Content-Length header was provided
+
+    requestID: uint
+      ## Identifier used to distinguish requests
+
+    when httpxUseStreams:
+      requestBodyStream*: Option[RequestBodyStream]
+        ## The request's body stream, or none if the request does not (or cannot) have a body.
+        ## Through this stream, a request body can be streamed without buffering its entirety to memory.
+        ## Useful for file uploads and similar.
+
+      responseBodyStream*: FutureStream[string]
+        ## TODO
+        ## The response's body stream.
+        ## Useful for writing responses with an unknown size, such as data that is being generated on the fly.
+
+  OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
+    ## Callback used to handle HTTP requests
+
+  Startup = proc () {.closure, gcsafe.}
+
+  Settings* = object
+    ## HTTP server settings
+    
+    port*: Port
+      ## The port to bind to
+
+    bindAddr*: string
+      ## The address to bind to
+
+    numThreads: int
+      ## The number of threads to serve on
+
+    startup: Startup
+
+  HttpxDefect* = ref object of Defect
+    ## Defect raised when something HTTPX-specific fails
 
 when httpxSendServerDate:
   # We store the current server date here as a thread var and update it periodically to avoid checking the date each time we respond to a request.
@@ -216,7 +223,7 @@ func initData(fdKind: FdKind, ip = ""): Data =
         headersFinishPos: -1, ## By default we assume the fast case: end of data.
         ip: ip,
         contentLength: none[BiggestUInt](),
-        bodyStream: newFutureStream[string]("initData"),
+        bodyStream: newRequestBodyStream(),
     )
   else:
     return Data(fdKind: fdKind,
@@ -347,9 +354,9 @@ template tryAcceptClient() =
     regHandle()
     
 
-template closeClient(selector: Selector[Data],
+proc closeClient(selector: Selector[Data],
                              fd: SocketHandle|int,
-                             inLoop = true) =
+                             inLoop = true) {.inline.} =
   # TODO: Can POST body be sent with Connection: Close?
   var data: ptr Data = addr selector.getData(fd)
   let isRequestComplete = data.reqFut.isNil or data.reqFut.finished
@@ -367,12 +374,7 @@ template closeClient(selector: Selector[Data],
     # Once we do so the `data` will no longer be accessible.
     selector.unregister(fd)
 
-  logging.debug("socket: " & $fd & " is closed!")
-
-  when inLoop:
-    break
-  else:
-    return
+  logging.debug("socket: " & $fd.int & " is closed!")
 
 proc onRequestFutureComplete(theFut: Future[void],
                              selector: Selector[Data], fd: int) =
@@ -451,6 +453,9 @@ proc validateRequest(req: Request): bool {.gcsafe.}
 proc processEvents(selector: Selector[Data],
                    events: array[64, ReadyKey], count: int,
                    onRequest: OnRequest) =
+
+  var buf: array[httpxClientBufSize, char]
+
   for i in 0 ..< count:
     let fd = events[i].fd
     var data: ptr Data = addr(getData(selector, fd))
@@ -458,7 +463,10 @@ proc processEvents(selector: Selector[Data],
     if Event.Error in events[i].events:
       if isDisconnectionError({SocketFlag.SafeDisconn},
                               events[i].errorCode):
+
+        data.bodyStream.complete()
         closeClient(selector, fd)
+        break
       raiseOSError(events[i].errorCode)
 
     case data.fdKind
@@ -478,8 +486,6 @@ proc processEvents(selector: Selector[Data],
       if Event.Read in events[i].events:
         let disp = getGlobalDispatcher()
 
-        var buf: array[httpxClientBufSize, char]
-
         echo "about do to while true"
 
         # Read until EAGAIN. We take advantage of the fact that the client
@@ -491,39 +497,54 @@ proc processEvents(selector: Selector[Data],
 
           # If the request body stream queue is full, wait until it stops being full
           when httpxUseStreams:
-            if unlikely(data.bodyStream.len >= httpxMaxStreamQueueSize):
+            if unlikely(data.bodyStream.queueLen >= httpxMaxStreamQueueLength):
+              ## TODO Set callback
               echo "BREAK"
               break
 
-          echo "Waiting on RECV..."
-          let ret = recv(fd.SocketHandle, addr buf[0], httpxClientBufSize, 0.cint)
+          proc doRecv(fd: SocketHandle): (int, bool) =
+            ## Tries to read from the socket and returns a tuple of the returned amount (or -1 if there was an error), and whether the loop it was called from (if any) should be broken from
 
-          echo "RECV " & $ret
+            echo "Waiting on RECV..."
+            let ret = recv(fd, addr buf[0], httpxClientBufSize, 0.cint)
 
-          if ret == 0:
-            when httpxUseStreams:
-              if unlikely(not data.bodyStream.finished):
-                # TODO Raise error like RequestClosedError
-                echo "FAIL"
-                echo "FINISHED BEFORE FAIL? " & $data.bodyStream.finished
-                data.bodyStream.fail(newException(ValueError, "TODO Request closed before full body was read"))
+            template shouldBreak =
+              return (ret, true)
 
-            closeClient(selector, fd)
+            echo "RECV " & $ret
 
-          if ret == -1:
-            # Error!
-            let lastError = osLastError()
+            if ret == 0:
+              when httpxUseStreams:
+                if unlikely(not data.bodyStream.isFinished):
+                  # TODO Raise error like RequestClosedError
+                  echo "FAIL"
+                  echo "FINISHED BEFORE FAIL? " & $data.bodyStream.isFinished
+                  data.bodyStream.fail(newException(ValueError, "TODO Request closed before full body was read"))
 
-            when usePosixVersion:
-              if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
-                break
-            else:
-              if lastError.int == WSAEWOULDBLOCK:
-                break
-
-            if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
               closeClient(selector, fd)
-            raiseOSError(lastError)
+              shouldBreak()
+
+            if ret == -1:
+              # Error!
+              let lastError = osLastError()
+
+              when usePosixVersion:
+                if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
+                  shouldBreak()
+              else:
+                if lastError.int == WSAEWOULDBLOCK:
+                  shouldBreak()
+
+              if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
+                closeClient(selector, fd)
+                shouldBreak()
+              raiseOSError(lastError)
+            
+            return (ret, false)
+
+          let (ret, shouldBreak) = doRecv(fd.SocketHandle)
+          if shouldBreak:
+            break
 
           template writeBuf() =
             # Write buffer to our data.
@@ -552,7 +573,7 @@ proc processEvents(selector: Selector[Data],
                       if needsBody:
                         some data.bodyStream
                       else:
-                        none[FutureStream[string]](),
+                        none[RequestBodyStream](),
                   )
                 else:
                   Request(
@@ -597,7 +618,7 @@ proc processEvents(selector: Selector[Data],
                 if bodyChunkLen > 0:
                   var bodyChunk = data.data.substr(data.headersFinishPos, data.data.len)
 
-                  asyncCheck data.bodyStream.write(bodyChunk)
+                  data.bodyStream.write(bodyChunk, fd.SocketHandle)
                   data.bodyBytesRead += bodyChunkLen.BiggestUInt
 
                   data.data.setLen(data.headersFinishPos)
@@ -606,7 +627,7 @@ proc processEvents(selector: Selector[Data],
                 for i in 0 ..< ret:
                   chunk[i] = buf[i]
 
-                asyncCheck data.bodyStream.write(chunk)
+                data.bodyStream.write(chunk, fd.SocketHandle)
                 data.bodyBytesRead += ret.BiggestUInt
                 echo "WROTE, NOW SIZE: " & $data.bodyBytesRead
 
@@ -654,6 +675,7 @@ proc processEvents(selector: Selector[Data],
 
           if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
             closeClient(selector, fd)
+            break
           raiseOSError(lastError)
 
         data.bytesSent.inc(ret)
@@ -718,27 +740,29 @@ proc eventLoop(params: (OnRequest, Settings)) =
           selector.selectInto((disp.timers[0].finishAt - getMonoTime()).inMilliseconds.int, events)
         else:
           selector.selectInto(20, events)
+
       if ret > 0:
         processEvents(selector, events, ret, onRequest)
+      
       asyncdispatch.poll(0)
 
-func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
+proc httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
   ## Parses the request's data to find the request HttpMethod.
   parseHttpMethod(req.selector.getData(req.client).data)
 
-func path*(req: Request): Option[string] {.inline.} =
+proc path*(req: Request): Option[string] {.inline.} =
   ## Parses the request's data to find the request target.
   if unlikely(req.client notin req.selector):
     return
   parsePath(req.selector.getData(req.client).data)
 
-func headers*(req: Request): Option[HttpHeaders] =
+proc headers*(req: Request): Option[HttpHeaders] =
   ## Parses the request's data to get the headers.
   if unlikely(req.client notin req.selector):
     return
   parseHeaders(req.selector.getData(req.client).data)
 
-func body*(req: Request): Option[string] =
+proc body*(req: Request): Option[string] =
   ## Retrieves the body of the request.
   let pos = req.selector.getData(req.client).headersFinishPos
   if pos == -1: 
@@ -753,7 +777,7 @@ func body*(req: Request): Option[string] =
         0
     doAssert result.get.len == length
 
-func ip*(req: Request): string =
+proc ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
   req.selector.getData(req.client).ip
 
