@@ -12,25 +12,25 @@ proc onRequest(req: Request): Future[void] {.async.} =
       const headers = "Content-Type: text/plain"
 
       # TODO REMOVE THIS
-      # req.send(Http200, "Hello, World!", headers)
-      # return
+      req.send(Http200, "Hello, World!", headers)
+      return
 
-      var len = 0
+      # var len = 0
 
-      if req.requestBodyStream.isSome:
-        let stream = req.requestBodyStream.unsafeGet()
+      # if req.requestBodyStream.isSome:
+      #   let stream = req.requestBodyStream.unsafeGet()
 
-        while true:
-          let (hasChunk, chunk) = await stream.read()
-          if not hasChunk:
-            break
+      #   while true:
+      #     let (hasChunk, chunk) = await stream.read()
+      #     if not hasChunk:
+      #       break
 
-          echo "Got data with length: " & $chunk.len
-          len += chunk.len
+      #     echo "Got data with length: " & $chunk.len
+      #     len += chunk.len
         
-        echo "Finished stream"
+      #   echo "Finished stream"
 
-      req.send(Http200, $len, headers)
+      # req.send(Http200, $len, headers)
     else:
       req.send(Http404)
 
