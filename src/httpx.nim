@@ -103,21 +103,32 @@ type
     fdKind: FdKind ## Determines the fd kind (server, client, dispatcher)
                    ## - Client specific data.
                    ## A queue of data that needs to be sent when the FD becomes writeable.
-    sendQueue: string
-    ## The number of characters in `sendQueue` that have been sent already.
+    
+    when not httpxUseStreams:
+      sendQueue: string
+        ## The response send queue string.
+        ## When httpxUseStreams is true, you will need to use responseBodyStream instead.
+    
     bytesSent: int
-    ## Big chunk of data read from client during request.
+      ## The number of characters in `sendQueue` that have been sent already
+
     data: string
-    ## Determines whether `data` contains "\c\l\c\l".
+      ## Big chunk of data read from client during request
+    
     headersFinished: bool
-    ## Determines position of the end of "\c\l\c\l".
+      ## Determines whether `data` contains "\c\l\c\l"
+    
     headersFinishPos: int
-    ## The address that a `client` connects from.
+      ## Determines position of the end of "\c\l\c\l"
+
     ip: string
-    ## Future for onRequest handler (may be nil).
+      ## The address that a `client` connected from
+
     reqFut: Future[void]
-    ## Identifier for current request. Mainly for better detection of cross-talk.
+      ## Future for onRequest handler (may be nil).
+
     requestID: uint
+      ## Identifier for current request. Mainly for better detection of cross-talk.
 
     contentLength: Option[BiggestUInt]
       ## The request's content length, or none if it has no body or headers haven't been read yet
@@ -126,8 +137,11 @@ type
       createdRequest: bool
         ## Whether a request for the data has been created
 
-      bodyStream: RequestBodyStream
-        ## The request body queue
+      requestBodyStream: AsyncStream[string]
+        ## The request body stream
+      
+      responseStream: AsyncStream[string]
+        ## The response data stream
       
       isBodyFinished: bool
         ## Whether the request body was read entirely
@@ -153,12 +167,12 @@ type
       ## Identifier used to distinguish requests
 
     when httpxUseStreams:
-      requestBodyStream*: Option[RequestBodyStream]
+      requestBodyStream*: Option[AsyncStream[string]]
         ## The request's body stream, or none if the request does not (or cannot) have a body.
         ## Through this stream, a request body can be streamed without buffering its entirety to memory.
         ## Useful for file uploads and similar.
 
-      responseBodyStream*: FutureStream[string]
+      responseBodyStream*: AsyncStream[string]
         ## TODO
         ## The response's body stream.
         ## Useful for writing responses with an unknown size, such as data that is being generated on the fly.
@@ -223,7 +237,8 @@ func initData(fdKind: FdKind, ip = ""): Data =
         headersFinishPos: -1, ## By default we assume the fast case: end of data.
         ip: ip,
         contentLength: none[BiggestUInt](),
-        bodyStream: newRequestBodyStream(),
+        requestBodyStream: newAsyncStream[string](),
+        responseStream: newAsyncStream[string](),
     )
   else:
     return Data(fdKind: fdKind,
@@ -254,10 +269,6 @@ proc unsafeSend*(req: Request, data: string) {.inline.} =
   ##
   ## It does not check whether the socket is in a state
   ## that can be written so be careful when using it.
-  
-  when httpxUseStreams:
-    # When streams are enabled, you should
-    {.deprecated: "Use the responseBodyStream property on Request instead".}
 
   if req.closed:
     return
