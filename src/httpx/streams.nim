@@ -3,8 +3,6 @@
 
 import std/[deques, asyncdispatch, options]
 
-{.experimental: "codeReordering".}
-
 type AsyncStreamCb* = proc () {.closure, gcsafe.}
   ## A GC-safe closure callback used for AsyncStream
 
