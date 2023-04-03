@@ -1,63 +1,62 @@
 ## Asynchronous stream implementation used by the server.
-## For a description of how the stream works, see documentation on the AsyncBodyStream type.
+## For a description of how the stream works, see documentation on the AsyncStream type.
 
 import std/[deques, asyncdispatch, options]
 
 {.experimental: "codeReordering".}
 
-type AsyncBodyCb* = proc () {.closure, gcsafe.}
-  ## A GC-safe closure callback used for AsyncBodyStream
+type AsyncStreamCb* = proc () {.closure, gcsafe.}
+  ## A GC-safe closure callback used for AsyncStream
 
-type AsyncBodyStream* = ref object
+type AsyncStream*[T] = ref object
   ## # Description
-  ## An async body stream for requests and responses.
-  ## Uses an internal queue of chunks with a maximum length.
+  ## An async stream backed by an internal queue.
+  ## Uses an internal queue of items with a maximum length.
   ## 
   ## ## Behavior of streams with full or empty queues
   ## Writes to a full queue will not complete until at least 1 slot becomes available.
-  ## Reads to an empty queue will not complete until at least 1 chunk is written.
+  ## Reads to an empty queue will not complete until at least 1 item is written.
   ## 
   ## ## Behavior of finished/completed/failed streams
   ## A stream is considered to be **finished** if it was **completed** or **failed**.
   ## 
-  ## If a stream is finished and still has chunks in its queue, the remaining chunks can be read, but no new chunks can be written.
+  ## If a stream is finished and still has items in its queue, the remaining items can be read, but no new items can be written.
   ## Subsequent reads to a completed stream with an empty queue will immediately return None.
   ## Subsequent reads to a failed stream with an empty queue will immediately raise the exception that the stream was failed with.
   ## 
   ## If a stream is failed, all pending writes will immediately raise the exception that was used to fail the stream.
   ## Subsequent writes to it will also raise the exception.
   ## 
-  ## The general concept around finished streams is that queued chunks can be read without any unexpected behavior, but writes cannot be performed.
+  ## The general concept around finished streams is that queued items can be read without any unexpected behavior, but writes cannot be performed.
   ## The reasoning behind this design is that consumers should be able to read the entire stream up until the point where it was completed or failed.
   
-  queue: Deque[string]
-    ## The body data queue.
-    ## The strings are chunks from the body, and their length never exceeds httpxClientBufDefaultSize, but is never smaller than 1.
+  queue: Deque[T]
+    ## The data queue
   
   maxQueueLenInternal: int
     ## Internal property, see maxQueueLen getter
 
-  readCbs: Deque[AsyncBodyCb]
+  readCbs: Deque[AsyncStreamCb]
     ## Callbacks to be called when the queue has new data to read.
     ## There is one callback per queue item, and callbacks are called in the order that they were registered.
     ## 
     ## Example scenario:
     ## The queue is empty.
     ## Proc 1 registers cb 1, and then proc 2 registers cb 2.
-    ## 3 chunks of data are received.
-    ## cb 1 is called for the first chunk, then cb 2 is called for the second chunk, finally the third chunk remains in the queue, ready to be read later.
+    ## 3 items are received.
+    ## cb 1 is called for the first item, then cb 2 is called for the second item, finally the third item remains in the queue, ready to be read later.
     ## 
     ## All remaining callbacks will be called when the stream is finished.
 
-  writeCbs: Deque[AsyncBodyCb]
+  writeCbs: Deque[AsyncStreamCb]
     ## Callbacks to be called when the queue was full but now has a slot free.
     ## There is one callback per queue free slot, and callbacks are called in the order that they were registered.
     ## 
     ## Example scenario:
     ## The queue is full.
     ## Proc 1 registers cb 1, and then proc 2 registers cb 2.
-    ## 3 chunks of data are read, and therefore those 3 slots become available.
-    ## cb 1 is called for the first slot, then cb 2 is called for the slot chunk, finally the third slot remains free, ready to be written to later.
+    ## 3 items are read, and therefore those 3 slots become available.
+    ## cb 1 is called for the first slot, then cb 2 is called for the second slot, finally the third slot remains free, ready to be written to later.
     ## 
     ## All remaining callbacks will be called when the stream is finished.
 
@@ -67,53 +66,53 @@ type AsyncBodyStream* = ref object
   exceptionInternal: Option[ref Exception]
     ## Internal property, see exception getter
 
-proc newAsyncBodyStream*(maxQueueLen: range[1..high(int)]): AsyncBodyStream =
-  ## Creates a new AsyncBodyStream
+proc newAsyncStream*[T](maxQueueLen: range[1..high(int)]): AsyncStream[T] =
+  ## Creates a new AsyncStream
   
-  result = new AsyncBodyStream
-  result.queue = initDeque[string](maxQueueLen)
+  result = new AsyncStream[T]
+  result.queue = initDeque[T](maxQueueLen)
   result.maxQueueLenInternal = maxQueueLen
-  result.readCbs = initDeque[AsyncBodyCb](1)
-  result.writeCbs = initDeque[AsyncBodyCb](1)
+  result.readCbs = initDeque[AsyncStreamCb](1)
+  result.writeCbs = initDeque[AsyncStreamCb](1)
   result.isCompletedInternal = false
   result.exceptionInternal = none[ref Exception]()
 
-func isCompleted*(this: AsyncBodyStream): bool {.inline.} =
+func isCompleted*[T](this: AsyncStream[T]): bool {.inline.} =
   ## Whether the stream is completed.
   ## If true, exception will be None.
   
   return this.isCompletedInternal
 
-func isFailed*(this: AsyncBodyStream): bool {.inline.} =
+func isFailed*[T](this: AsyncStream[T]): bool {.inline.} =
   ## Whether the stream is failed.
   ## If true, exception will be Some.
   
   return this.exceptionInternal.isSome
 
-func isFinished*(this: AsyncBodyStream): bool {.inline.} =
-  ## Whether the body stream is either completed or failed.
+func isFinished*[T](this: AsyncStream[T]): bool {.inline.} =
+  ## Whether the stream is either completed or failed.
   ## To check each individually, use isCompleted and isFailed, respectively.
   
   return this.isCompleted or this.isFailed
 
-func exception*(this: AsyncBodyStream): Option[ref Exception] {.inline.} =
+func exception*[T](this: AsyncStream[T]): Option[ref Exception] {.inline.} =
   ## The exception that was the cause of the stream failing to be written/read, or none if there was no exception.
   ## If an exception is present, any reads to the stream when the queue is empty will raise this exception.
   ## The isFinished property should be true if this is some.
   
   return this.exceptionInternal
 
-func queueLen*(this: AsyncBodyStream): int {.inline.} =
+func queueLen*[T](this: AsyncStream[T]): int {.inline.} =
   ## The current internal queue length
 
   return this.queue.len
 
-func maxQueueLen*(this: AsyncBodyStream): int {.inline.} =
+func maxQueueLen*[T](this: AsyncStream[T]): int {.inline.} =
   ## The maximum queue length
   
   return this.maxQueueLenInternal
 
-proc `=maxQueueLen`*(this: AsyncBodyStream, newLen: range[1..high(int)]) {.inline.} =
+proc `=maxQueueLen`*[T](this: AsyncStream[T], newLen: range[1..high(int)]) {.inline.} =
   ## Sets the maximum queue length.
   ## Raises ValueError if the new length is less than the current queue length.
   ## Lowering queue size while a stream is active is dangerous because it can lower stream performance.
@@ -124,12 +123,12 @@ proc `=maxQueueLen`*(this: AsyncBodyStream, newLen: range[1..high(int)]) {.inlin
 
   this.maxQueueLenInternal = newLen
 
-proc write*(this: AsyncBodyStream, chunk: string): Future[void] =
-  ## Tries to write the provided chunk to the stream, or raises ValueError if the stream is finished.
+proc write*[T](this: AsyncStream[T], item: T): Future[void] =
+  ## Tries to write the provided item to the stream, or raises ValueError if the stream is finished.
   ## If the stream is failed, the exception it failed with will be raised.
   ## If the queue is full, the returned Future will resolve when a queue slot becomes free, or when the stream is completed or failed.
   
-  let resFut = newFuture[void]("AsyncBodyStream.write")
+  let resFut = newFuture[void]("AsyncStream.write")
 
   proc mkComplExc(): ref Exception {.inline.} =
     newException(ValueError, "Cannot write to streams that are completed")
@@ -147,8 +146,8 @@ proc write*(this: AsyncBodyStream, chunk: string): Future[void] =
     failAndReturn(mkComplExc())
 
   template doWrite() =
-    # Add chunk to queue and complete future
-    this.queue.addLast(chunk)
+    # Add item to queue and complete future
+    this.queue.addLast(item)
     resFut.complete()
 
     # If there is a read callback, run it now
@@ -158,7 +157,7 @@ proc write*(this: AsyncBodyStream, chunk: string): Future[void] =
 
   # Check if the queue is full
   if this.queueLen < this.maxQueueLen:
-    # The queue has at least 1 free slot; add the chunk to the queue and complete the future (assuming the stream isn't failed).
+    # The queue has at least 1 free slot; add the item to the queue and complete the future (assuming the stream isn't failed).
 
     if this.isFailed:
       failAndReturn(this.exceptionInternal.unsafeGet())
@@ -181,18 +180,18 @@ proc write*(this: AsyncBodyStream, chunk: string): Future[void] =
   
   return resFut
 
-proc writeAll*(this: AsyncBodyStream, chunks: seq[string]) {.async.} =
-  ## Tries to write the provided chunks to the stream.
+proc writeAll*[T](this: AsyncStream[T], items: seq[T]) {.async, inline.} =
+  ## Tries to write the provided items to the stream.
   ## See docs on the `write` proc.
   
-  for chunk in chunks:
-    await this.write(chunk)
+  for item in items:
+    await this.write(item)
 
-proc read*(this: AsyncBodyStream): Future[Option[string]] =
+proc read*[T](this: AsyncStream[T]): Future[Option[T]] =
   ## Reads from the stream.
   ## If the stream is complete, None is returned.
   
-  let resFut = newFuture[Option[string]]("AsyncBodyStream.read")
+  let resFut = newFuture[Option[T]]("AsyncStream.read")
 
   template failAndReturn(exc: ref Exception, inCb: bool = false) =
     resFut.fail(exc)
@@ -201,7 +200,7 @@ proc read*(this: AsyncBodyStream): Future[Option[string]] =
     else:
       return resFut
   
-  template complAndReturn(val: Option[string], inCb: bool = false) =
+  template complAndReturn(val: Option[T], inCb: bool = false) =
     resFut.complete(val)
     when inCb:
       return
@@ -209,9 +208,9 @@ proc read*(this: AsyncBodyStream): Future[Option[string]] =
       return resFut
 
   template doRead() =
-    # Add chunk to queue and complete future
-    let chunk = this.queue.popFirst()
-    resFut.complete(some chunk)
+    # Add item to queue and complete future
+    let item = this.queue.popFirst()
+    resFut.complete(some item)
 
     # If there is a write callback, run it now
     if this.writeCbs.len > 0:
@@ -220,7 +219,7 @@ proc read*(this: AsyncBodyStream): Future[Option[string]] =
 
   # Check if the queue is empty
   if this.queueLen > 0:
-    # The queue has at least 1 chunk; read the chunk and complete the future (assuming the stream isn't failed).
+    # The queue has at least 1 item; read the item and complete the future (assuming the stream isn't failed).
 
     if this.isFailed:
       failAndReturn(this.exceptionInternal.unsafeGet())
@@ -228,47 +227,47 @@ proc read*(this: AsyncBodyStream): Future[Option[string]] =
     doRead()
   elif this.isCompleted:
     # The queue is empty and the stream is completed; complete the future with None
-    complAndReturn(none[string]())
+    complAndReturn(none[T]())
   else:
-    # The queue is empty; wait until there is a chunk, read it, then complete future
+    # The queue is empty; wait until there is an item, read it, then complete future
     proc readCb() {.closure, gcsafe.} =
       # Do necessary checks before reading
       if this.isFailed:
         failAndReturn(this.exceptionInternal.unsafeGet(), inCb = true)
       if this.isCompleted and this.queueLen < 1:
-        complAndReturn(none[string](), inCb = true)
+        complAndReturn(none[T](), inCb = true)
       
-      # We don't need to check whether the queue is empty because this callback is only called when a chunk is written
+      # We don't need to check whether the queue is empty because this callback is only called when an item is written
       doRead()
 
-    # Add callback to be called when a chunk is written
+    # Add callback to be called when an item is written
     this.readCbs.addLast(readCb)
   
   return resFut
 
-proc readAll*(this: AsyncBodyStream, expectedLen: Natural = 0): Future[seq[string]] {.async.} =
+proc readAll*[T](this: AsyncStream[T], expectedLen: Natural = 0): Future[seq[T]] {.async, inline.} =
   ## Reads the entire stream into a seq and returns it.
   ## Note that this proc will use as much memory as the entire result of the stream.
   ## For very large streams or streams of unknown length, this can cause memory exhaustion.
   ## 
   ## If you have an expected stream length, you can provide it as `expectedLen` so that the memory for the seq can be allocated up-front.
-  ## Note that this length represents the number of chunks, not the length of the stream result in bytes.
+  ## Note that this length represents the number of items, not the length of the stream result in bytes.
   ## 
   ## See docs on the `read` proc.
   
-  var res = newSeq[string](expectedLen)
+  var res = newSeq[T](expectedLen)
 
   while true:
-    let chunk = await this.read()
+    let item = await this.read()
 
-    if chunk.isSome:
-      res.add(chunk.unsafeGet())
+    if item.isSome:
+      res.add(item.unsafeGet())
     else:
       break
   
   return res
 
-proc readToString*(this: AsyncBodyStream, expectedLen: Natural = 0): Future[string] {.async.} =
+proc readToString*[T: string|char](this: AsyncStream[T], expectedLen: Natural = 0): Future[string] {.async.} =
   ## Reads the entire stream into a string and returns it.
   ## Note that this proc will use as much memory as the entire result of the stream.
   ## For very large streams or streams of unknown length, this can cause memory exhaustion.
@@ -280,16 +279,16 @@ proc readToString*(this: AsyncBodyStream, expectedLen: Natural = 0): Future[stri
   var res = newStringOfCap(expectedLen)
 
   while true:
-    let chunk = await this.read()
+    let item = await this.read()
 
-    if chunk.isSome:
-      res.add(chunk.unsafeGet())
+    if item.isSome:
+      res.add(item.unsafeGet())
     else:
       break
   
   return res
 
-proc complete*(this: AsyncBodyStream) =
+proc complete*[T](this: AsyncStream[T]) =
   ## Completes the stream.
   ## All pending reads and writes will be immediately failed.
   ## There will only be pending reads if the queue was empty, so subsequent reads to a non-empty queue will still function as normal.
@@ -308,21 +307,21 @@ proc complete*(this: AsyncBodyStream) =
     let cb = this.writeCbs.popFirst()
     cb()
 
-proc completeWith*(this: AsyncBodyStream, chunk: string) {.async.} =
-  ## Writes the provided chunk and then completes the stream.
+proc completeWith*[T](this: AsyncStream, item: T) {.async, inline.} =
+  ## Writes the provided item and then completes the stream.
   ## See docs on the `complete` proc.
   
-  await this.write(chunk)
+  await this.write(item)
   this.complete()
 
-proc completeWithAll*(this: AsyncBodyStream, chunks: seq[string]) {.async.} =
-  ## Writes the provided chunks and then completes the stream.
+proc completeWithAll*[T](this: AsyncStream, items: seq[T]) {.async, inline.} =
+  ## Writes the provided items and then completes the stream.
   ## See docs on the `complete` proc.
   
-  await this.writeAll(chunks)
+  await this.writeAll(items)
   this.complete()
 
-proc fail*(this: AsyncBodyStream, exc: ref Exception) =
+proc fail*(this: AsyncStream, exc: ref Exception) =
   ## Fails the stream with an exception.
   ## All pending reads and writes will be immediately failed with the provided exception.
   ## There will only be pending reads if the queue was empty, so subsequent reads to a non-empty queue will still function as normal.

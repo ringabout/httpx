@@ -18,7 +18,7 @@ template asyncSuite(name: string, body: untyped) =
         waitFor main()
 
 asyncSuite "Streams can be written and read in order":
-    var stream = newAsyncBodyStream(defaultStreamQueueLen)
+    var stream = newAsyncStream[string](defaultStreamQueueLen)
 
     await stream.completeWithAll(dummySource)
 
@@ -27,7 +27,7 @@ asyncSuite "Streams can be written and read in order":
     check(res == dummySource)
     
 asyncSuite "Stream reads can wait on writes":
-    var stream = newAsyncBodyStream(defaultStreamQueueLen)
+    var stream = newAsyncStream[string](defaultStreamQueueLen)
 
     proc slowWrite() {.async.} =
         for chunk in dummySource:
@@ -43,7 +43,7 @@ asyncSuite "Stream reads can wait on writes":
 
 asyncSuite "Stream writes can wait on reads":
     # Stream can't hold entire source
-    var stream = newAsyncBodyStream(dummySource.len - 1)
+    var stream = newAsyncStream[string](dummySource.len - 1)
 
     var res = newSeq[string]()
 
