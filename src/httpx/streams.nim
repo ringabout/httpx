@@ -217,17 +217,19 @@ proc read*[T](this: AsyncStream[T]): Future[Option[T]] =
 
   # Check if the queue is empty
   if this.queueLen > 0:
-    # The queue has at least 1 item; read the item and complete the future (assuming the stream isn't failed).
-
-    if this.isFailed:
-      failAndReturn(this.exceptionInternal.unsafeGet())
+    # The queue has at least 1 item; read the item and complete the future
 
     doRead()
   elif this.isCompleted:
     # The queue is empty and the stream is completed; complete the future with None
     complAndReturn(none[T]())
   else:
-    # The queue is empty; wait until there is an item, read it, then complete future
+    # The queue is empty; wait until there is an item, read it, then complete future (assuming the stream hasn't been failed)
+
+    # Do fail check immediately, otherwise a failed stream with no data will hang forever
+    if this.isFailed:
+      failAndReturn(this.exceptionInternal.unsafeGet())
+
     proc readCb() {.closure, gcsafe.} =
       # Do necessary checks before reading
       if this.isFailed:
