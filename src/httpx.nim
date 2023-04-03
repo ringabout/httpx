@@ -726,6 +726,9 @@ proc eventLoop(params: (OnRequest, Settings)) =
     discard updateDate(0.AsyncFD)
     asyncdispatch.addTimer(1000, false, updateDate)
 
+  # Add dummy timer that ensures timers registered in request handlers are called
+  asyncdispatch.addTimer(0, false, proc (fd: AsyncFD): bool = false)
+
   let disp = getGlobalDispatcher()
 
   when usePosixVersion:
