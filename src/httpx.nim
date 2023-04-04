@@ -90,6 +90,7 @@ const httpxSendServerDate* {.booldefine.} = true
 
 when httpxUseStreams:
   import httpx/streams
+  export streams
 
 type
   FdKind = enum
