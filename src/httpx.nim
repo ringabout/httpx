@@ -424,20 +424,23 @@ template tryAcceptClient() =
   else:
     regHandle()
 
-proc closeClient(selector: Selector[Data],
-                             fd: SocketHandle,
-                             inLoop = true) {.inline.} =
+proc closeClient(
+  data: ptr Data,
+  selector: Selector[Data],
+  fd: SocketHandle,
+  inLoop = true,
+) {.inline.} =
   # TODO: Can POST body be sent with Connection: Close?
 
-  var data: ptr Data = addr selector.getData(fd)
+  var reqBodyStream = data.requestBodyStream
 
   template doClose() =
     fd.close()
 
     when httpxUseStreams:
       # Fail request body stream if not already finished
-      if not data.requestBodyStream.isFinished:
-        data.requestBodyStream.fail(newException(ClientClosedError, "The client was closed"))
+      if not reqBodyStream.isFinished:
+        reqBodyStream.fail(newException(ClientClosedError, "Client connection was closed before the full request body could be received"))
 
   let isRequestComplete = data.reqFut.isNil or data.reqFut.finished
   if isRequestComplete:
@@ -545,7 +548,7 @@ proc processEvents(selector: Selector[Data],
 
         when httpxUseStreams:
           data.requestBodyStream.complete()
-        closeClient(selector, fd.SocketHandle)
+        closeClient(data, selector, fd.SocketHandle)
         break
       raiseOSError(events[i].errorCode)
 
@@ -586,12 +589,7 @@ proc processEvents(selector: Selector[Data],
               return (ret, true)
 
             if ret == 0:
-              when httpxUseStreams:
-                if unlikely(not data.requestBodyStream.isFinished):
-                  # TODO Raise error like RequestClosedError
-                  data.requestBodyStream.fail(newException(ClientClosedError, "Client closed before full request body could be received"))
-
-              closeClient(selector, fd)
+              closeClient(data, selector, fd)
               shouldBreak()
 
             if ret == -1:
@@ -606,7 +604,7 @@ proc processEvents(selector: Selector[Data],
                   shouldBreak()
 
               if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
-                closeClient(selector, fd)
+                closeClient(data, selector, fd)
                 shouldBreak()
               raiseOSError(lastError)
             
@@ -764,7 +762,7 @@ proc processEvents(selector: Selector[Data],
                 break
 
             if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
-              closeClient(selector, fd.SocketHandle)
+              closeClient(data, selector, fd.SocketHandle)
               break
             raiseOSError(lastError)
 
