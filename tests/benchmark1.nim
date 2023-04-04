@@ -1,4 +1,4 @@
-import std/[options, json, asyncstreams, asyncdispatch]
+import std/[options, json, asyncdispatch]
 
 import ../src/httpx
 
