@@ -264,7 +264,7 @@ func closed*(req: Request): bool {.inline, raises: [].} =
   ## If the client has disconnected from the server or not.
   result = req.client notin req.selector
 
-func genHttpResponse*(code: HttpCode, contentLength: Option[BiggestUInt]|Option[int], headers: HttpHeaders|string): string {.inline.} =
+proc genHttpResponse*(code: HttpCode, contentLength: Option[BiggestUInt]|Option[int], headers: HttpHeaders|string): string {.inline.} =
     ## Generates an HTTP response string (without a body) and returns it.
     ## Includes server name and current server date if enabled.
     ## 
