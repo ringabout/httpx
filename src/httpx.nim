@@ -432,7 +432,8 @@ proc closeClient(
 ) {.inline.} =
   # TODO: Can POST body be sent with Connection: Close?
 
-  var reqBodyStream = data.requestBodyStream
+  when httpxUseStreams:
+    var reqBodyStream = data.requestBodyStream
 
   template doClose() =
     fd.close()
