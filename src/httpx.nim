@@ -739,6 +739,7 @@ proc processEvents(selector: Selector[Data],
         # When streams are enabled, a chunk is popped from the beginning of the stream queue.
         # If the chunk was only written partially, the remaining portion of the chunk will be pushed back to the beginning of the queue.
         # This means that very large chunks should not be written to the stream because it could lead to frequent truncation of chunks and then needing to prepend them back into the queue.
+        # It is safe to truncate and move chunks back into the queue because if the write was successful, the OS has already copied those bytes into its internal buffer, and no longer needs to reference our chunk's memory.
 
         when httpxUseStreams:
           ## TODO
