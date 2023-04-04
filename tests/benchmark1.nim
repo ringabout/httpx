@@ -7,13 +7,21 @@ proc onRequest(req: Request): Future[void] {.async.} =
     case req.path.get()
     of "/json":
       const data = $(%*{"message": "Hello, World!"})
-      req.send(Http200, data)
+
+      when httpxUseStreams:
+        await req.respond(Http200, data)
+      else:
+        req.send(Http200, data)
     of "/plaintext":
       const headers = "Content-Type: text/plain"
 
-      # TODO REMOVE THIS
-      req.send(Http200, "Hello, World!", headers)
-      return
+      when httpxUseStreams:
+        await req.respond(Http200, "Hello, World!", headers)
+        return
+      else:
+        # TODO REMOVE THIS
+        req.send(Http200, "Hello, World!", headers)
+        return
 
       # var len = 0
 
@@ -32,6 +40,9 @@ proc onRequest(req: Request): Future[void] {.async.} =
 
       # req.send(Http200, $len, headers)
     else:
-      req.send(Http404)
+      when httpxUseStreams:
+        await req.respond(Http404)
+      else:
+        req.send(Http404)
 
 run(onRequest)

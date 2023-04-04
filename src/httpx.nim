@@ -319,7 +319,7 @@ when httpxUseStreams:
     
     await req.responseStream.write(genHttpResponse(code, contentLen, headers))
 
-  proc respond*(req: Request, code: HttpCode, body: string = "", headers: HttpHeaders|string) {.inline, async.} =
+  proc respond*(req: Request, code: HttpCode, body: string = "", headers: HttpHeaders|string = "") {.inline, async.} =
     ## Sends a response with an HTTP status code, optionally with a response body, and completes the response.
     ## 
     ## If you want to write headers and then write your own response body using the response stream directly, use the writeHeaders proc and the responseStream property manually.
@@ -333,7 +333,7 @@ when httpxUseStreams:
     # Write headers first
     await req.writeHeaders(
       code,
-      contentLen = body.len.BiggestUInt,
+      contentLen = some body.len.BiggestUInt,
       headers = headers,
     )
 
@@ -894,7 +894,10 @@ proc validateRequest(req: Request): bool =
   # origin server SHOULD respond with the 501 (Not Implemented) status
   # code."
   if req.httpMethod.isNone:
-    req.send(Http501)
+    when httpxUseStreams:
+      asyncCheck req.respond(Http501)
+    else:
+      req.send(Http501)
     result = false
 
 proc run*(onRequest: OnRequest, settings: Settings) =
