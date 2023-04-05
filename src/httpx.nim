@@ -324,10 +324,10 @@ proc bodyInTransit(data: ptr Data): bool =
   if data.headersFinishPos == -1: 
     return false
 
-  if unlikely(data.contentLength.isNone):
-    data.contentLength = some parseContentLength(data.data)
-
-  let contentLen = data.contentLength.unsafeGet()
+  let contentLen = if data.contentLength.isSome:
+    data.contentLength.unsafeGet()
+  else:
+    0
 
   let bodyLen =
     when httpxUseStreams:
@@ -406,6 +406,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
             selector: selector,
             client: fd,
             requestID: data.requestID,
+            contentLength: data.contentLength,
             requestBodyStream:
               if needsBody:
                 some data.requestBodyStream
@@ -418,6 +419,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
             selector: selector,
             client: fd.SocketHandle,
             requestID: data.requestID,
+            contentLength: data.contentLength,
           )
 
       when httpxUseStreams:
@@ -444,9 +446,15 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
         if data.bytesSent != 0:
           logging.warn("bytesSent isn't empty.")  
 
+    let needsBody = methodNeedsBody(data)
+
     when httpxUseStreams:
       if data.headersFinished and not data.createdRequest:
-        createRequest(methodNeedsBody(data))
+        # Parse content length if applicable
+        if needsBody:
+          data.contentLength = some parseContentLength(data.data)
+
+        createRequest(needsBody)
 
         # Write any part of the data past the headers to the body stream
         let bodyChunkLen = data.headersFinishPos - data.data.len
@@ -455,9 +463,6 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
           var bodyChunk = data.data.substr(data.headersFinishPos, data.data.len)
           data.data.setLen(data.headersFinishPos)
 
-          echo "WROTE TINY CHUNK: ", bodyChunk
-
-          # TODO Figure out what needs to be done here in terms of full queue
           asyncCheck data.requestBodyStream.write(bodyChunk)
           data.bodyBytesRead += bodyChunkLen.BiggestUInt
 
@@ -473,7 +478,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
         if unlikely(getGlobalDispatcher().callbacks.len > 0):
           asyncdispatch.poll(0)
 
-    let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
+    let waitingForBody = needsBody and bodyInTransit(data)
     if likely(not waitingForBody):
       # For pipelined requests, we need to reset this flag.
       data.headersFinished = true

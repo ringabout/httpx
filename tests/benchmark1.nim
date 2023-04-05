@@ -31,6 +31,7 @@ proc onRequest(req: Request): Future[void] {.async.} =
         echo "GOT REQ"
 
         var len = 0
+        echo req.contentLength
         var contentLen = if req.contentLength.isSome:
           req.contentLength.unsafeGet().int
         else:
