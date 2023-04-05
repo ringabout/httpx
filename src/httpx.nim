@@ -534,14 +534,15 @@ proc initDataForClient(selector: Selector[Data], fd: SocketHandle, ip: string, o
     )
     data
   else:
-    Data(fdKind: fdKind,
-        sendQueue: "",
-        bytesSent: 0,
-        data: "",
-        headersFinished: false,
-        headersFinishPos: -1,
-        ip: ip,
-        contentLength: none[BiggestUInt](),
+    Data(
+      fdKind: FdKind.Client,
+      sendQueue: "",
+      bytesSent: 0,
+      data: "",
+      headersFinished: false,
+      headersFinishPos: -1,
+      ip: ip,
+      contentLength: none[BiggestUInt](),
     )
 
 func initData(fdKind: FdKind): Data =
