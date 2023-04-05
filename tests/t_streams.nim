@@ -1,5 +1,5 @@
 import std/[unittest, asyncdispatch, options]
-import ../src/httpx/[streams]
+import ../src/httpx
 
 type DummyError = object of CatchableError
 

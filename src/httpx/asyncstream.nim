@@ -58,14 +58,31 @@ type AsyncStream*[T] = ref object
     ## 
     ## All remaining callbacks will be called when the stream is finished.
 
+  afterReadCb: Option[AsyncStreamCb]
+    ## Optional callback to be called after every read.
+    ## Note that the read will already have been performed once this callback is called, and thus the queue will have already been modified.
+  
+  afterWriteCb: Option[AsyncStreamCb]
+    ## Optional callback to be called after every write.
+    ## Note that the write will already have been performed once this callback is called, and thus the queue will have already been modified.
+
   isCompletedInternal: bool
     ## Internal property, see isCompleted getter
 
   exceptionInternal: Option[ref Exception]
     ## Internal property, see exception getter
 
-proc newAsyncStream*[T](maxQueueLen: range[1..high(int)]): AsyncStream[T] =
-  ## Creates a new AsyncStream
+proc newAsyncStream*[T](
+  maxQueueLen: range[1..high(int)],
+  afterReadCb: Option[AsyncStreamCb] = none[AsyncStreamCb](),
+  afterWriteCb: Option[AsyncStreamCb] = none[AsyncStreamCb](),
+): AsyncStream[T] =
+  ## Creates a new AsyncStream.
+  ## 
+  ## Arguments:
+  ##  - `maxQueueLen`: The maximum queue length to use
+  ##  - `afterReadCb`: Optional callback to be called after every read (defaults to None)
+  ##  - `afterWriteCb`: Optional callback to be called after every write (defaults to None)
   
   result = new AsyncStream[T]
   result.queue = initDeque[T](maxQueueLen)
@@ -110,6 +127,12 @@ func maxQueueLen*[T](this: AsyncStream[T]): int {.inline.} =
   
   return this.maxQueueLenInternal
 
+func queue*[T](this: AsyncStream[T]): Deque[T] {.inline.} =
+  ## The internal queue.
+  ## 
+  ## Warning: modifying the queue manually while there are pending reads or writes will cause a deadlock until a new read/write occurs.
+  ## Exercise caution when modifying it!
+
 proc `=maxQueueLen`*[T](this: AsyncStream[T], newLen: range[1..high(int)]) {.inline.} =
   ## Sets the maximum queue length.
   ## Raises ValueError if the new length is less than the current queue length.
@@ -151,6 +174,11 @@ proc write*[T](this: AsyncStream[T], item: T): Future[void] =
     # If there is a read callback, run it now
     if this.readCbs.len > 0:
       let cb = this.readCbs.popFirst()
+      cb()
+    
+    # Call afterWriteCb if present
+    if this.afterWriteCb.isSome:
+      let cb = this.afterWriteCb.unsafeGet()
       cb()
 
   # Check if the queue is full
@@ -213,6 +241,11 @@ proc read*[T](this: AsyncStream[T]): Future[Option[T]] =
     # If there is a write callback, run it now
     if this.writeCbs.len > 0:
       let cb = this.writeCbs.popFirst()
+      cb()
+    
+    # Call afterReadCb if present
+    if this.afterReadCb.isSome:
+      let cb = this.afterReadCb.unsafeGet()
       cb()
 
   # Check if the queue is empty

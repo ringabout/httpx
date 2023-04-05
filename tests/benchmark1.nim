@@ -15,30 +15,35 @@ proc onRequest(req: Request): Future[void] {.async.} =
     of "/plaintext":
       const headers = "Content-Type: text/plain"
 
+      echo "GOT REQ"
+
       when httpxUseStreams:
-        await req.respond(Http200, "Hello, World!", headers)
-        return
+        # await req.respond(Http200, "Hello, World!", headers)
+        # return
+
+        var len = 0
+
+        if req.requestBodyStream.isSome:
+          let stream = req.requestBodyStream.unsafeGet()
+
+          while true:
+            echo "ABOUT TO READ"
+            let chunkRes = await stream.read()
+            if chunkRes.isNone:
+              break
+
+            let chunk = chunkRes.unsafeGet()
+
+            echo "Got data with length: ", chunk.len
+            len += chunk.len
+          
+          echo "Finished stream"
+
+        await req.respond(Http200, $len, headers)
       else:
         # TODO REMOVE THIS
         req.send(Http200, "Hello, World!", headers)
         return
-
-      # var len = 0
-
-      # if req.requestBodyStream.isSome:
-      #   let stream = req.requestBodyStream.unsafeGet()
-
-      #   while true:
-      #     let (hasChunk, chunk) = await stream.read()
-      #     if not hasChunk:
-      #       break
-
-      #     echo "Got data with length: " & $chunk.len
-      #     len += chunk.len
-        
-      #   echo "Finished stream"
-
-      # req.send(Http200, $len, headers)
     else:
       when httpxUseStreams:
         await req.respond(Http404)
