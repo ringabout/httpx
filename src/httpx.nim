@@ -624,7 +624,6 @@ proc processEvents(selector: Selector[Data],
             var buf: array[httpxClientBufSize, char]
             let ret = recv(fd, addr buf[0], httpxClientBufSize, 0.cint)
 
-
             template shouldBreak =
               return true
 
