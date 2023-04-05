@@ -83,12 +83,14 @@ proc newAsyncStream*[T](
   ##  - `maxQueueLen`: The maximum queue length to use
   ##  - `afterReadCb`: Optional callback to be called after every read (defaults to None)
   ##  - `afterWriteCb`: Optional callback to be called after every write (defaults to None)
-  
+
   result = new AsyncStream[T]
   result.queue = initDeque[T](maxQueueLen)
   result.maxQueueLenInternal = maxQueueLen
   result.readCbs = initDeque[AsyncStreamCb](1)
   result.writeCbs = initDeque[AsyncStreamCb](1)
+  result.afterReadCb = afterReadCb
+  result.afterWriteCb = afterWriteCb
   result.isCompletedInternal = false
   result.exceptionInternal = none[ref Exception]()
 
@@ -144,10 +146,14 @@ proc `=maxQueueLen`*[T](this: AsyncStream[T], newLen: range[1..high(int)]) {.inl
 
   this.maxQueueLenInternal = newLen
 
-proc write*[T](this: AsyncStream[T], item: T): Future[void] =
+proc write*[T](this: AsyncStream[T], item: sink T, prepend: bool|void = void): Future[void] =
   ## Tries to write the provided item to the stream, or raises ValueError if the stream is finished.
   ## If the stream is failed, the exception it failed with will be raised.
   ## If the queue is full, the returned Future will resolve when a queue slot becomes free, or when the stream is completed or failed.
+  ## 
+  ## If `prepend` is true, the item will be prepended to the queue instead of appended.
+  ## Use this only if you need to return an item to the queue after reading it.
+  ## In most cases, you will not need to use `prepend`.
   
   let resFut = newFuture[void]("AsyncStream.write")
 
@@ -168,7 +174,14 @@ proc write*[T](this: AsyncStream[T], item: T): Future[void] =
 
   template doWrite() =
     # Add item to queue and complete future
-    this.queue.addLast(item)
+    when prepend is bool:
+      if prepend:
+        this.queue.addFirst(item)
+      else:
+        this.queue.addLast(item)
+    else:
+      this.queue.addLast(item)
+
     resFut.complete()
 
     # If there is a read callback, run it now

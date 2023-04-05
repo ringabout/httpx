@@ -348,6 +348,75 @@ proc genRequestID(): uint =
 
 proc validateRequest(req: Request): bool {.gcsafe.}
 
+proc doSockWrite(selector: Selector[Data], fd: SocketHandle, data: ptr Data): bool =
+  ## Writes to the socket and performs all chunk handling logic.
+  ## If the caller should break/return, the proc will return true.
+  
+  when httpxUseStreams:
+    # We're not waiting for a read since this proc would only be called when there is a free slot in the queue
+    data.isAwaitingResWrite = false
+
+    # Read a chunk and try to write it to the socket
+    # We don't await the read because we know that there is data in the queue and therefore the Future will already be finished with the chunk
+    let stream = data.responseStream
+    let chunkRes = stream.read().read() # <-- Second .read() is to get Future value
+
+    # If the stream is complete, we need to close the client and break
+    if chunkRes.isNone:
+      closeClient(data, selector, fd)
+      return true
+
+    var chunk = chunkRes.unsafeGet()
+    let chunkLen = chunk.len
+
+    # Try to write the chunk
+    let ret = fd.send(addr chunk, chunkLen, 0)
+
+    # If only part of the chunk could be written, we need to get the part that could not be written and prepend it to the stream
+    if ret < chunkLen:
+      let chunkPart = chunk.substr(ret)
+      asyncCheck stream.write(chunkPart, prepend = true)
+  else:
+    # Write as much as possible from the send queue
+    let leftover =
+      when usePosixVersion:
+        data.sendQueue.len - data.bytesSent
+      else:
+        cint(data.sendQueue.len - data.bytesSent)
+    let ret = fd.SocketHandle.send(addr data.sendQueue[data.bytesSent], leftover, 0)
+
+  if ret == -1:
+    # Error!
+    let lastError = osLastError()
+
+    when usePosixVersion:
+      if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
+        return true
+    else:
+      if lastError.int == WSAEWOULDBLOCK:
+        return true
+
+    if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
+      closeClient(data, selector, fd)
+      return true
+    raiseOSError(lastError)
+
+  when httpxUseStreams:
+    # If the stream is finished, dispatch event
+    if stream.isFinished:
+      selector.updateHandle(fd, {Event.Read})
+  else:
+    data.bytesSent.inc(ret)
+
+    # If the queue is finished, clear buffers and dispatch event
+    if data.sendQueue.len == data.bytesSent:
+      data.bytesSent = 0
+      data.sendQueue.setLen(0)
+      data.data.setLen(0)
+      selector.updateHandle(fd, {Event.Read})
+  
+  return false
+
 proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRequest: OnRequest): bool =
   ## Reads from the socket and performs all chunk handing logic.
   ## If the caller should break/return, the proc will return true.
@@ -360,12 +429,9 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
   var buf: array[httpxClientBufSize, char]
   let ret = recv(fd, addr buf[0], httpxClientBufSize, 0.cint)
 
-  template shouldBreak =
-    return true
-
   if ret == 0:
     closeClient(data, selector, fd)
-    shouldBreak()
+    return true
 
   if ret == -1:
     # Error!
@@ -373,14 +439,14 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
 
     when usePosixVersion:
       if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
-        shouldBreak()
+        return true
     else:
       if lastError.int == WSAEWOULDBLOCK:
-        shouldBreak()
+        return true
 
     if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
       closeClient(data, selector, fd)
-      shouldBreak()
+      return true
     raiseOSError(lastError)
   
   template writeBuf() =
@@ -412,7 +478,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
                 some data.requestBodyStream
               else:
                 none[AsyncStream[string]](),
-            responseStream: newAsyncStream[string](httpxMaxStreamQueueLength)
+            responseStream: data.responseStream
           )
         else:
           Request(
@@ -490,7 +556,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
 
   if ret != httpxClientBufSize:
     # Assume there is nothing else for us right now and break.
-    shouldBreak()
+    return true
 
   return false
 
@@ -507,19 +573,23 @@ proc initDataForClient(selector: Selector[Data], fd: SocketHandle, ip: string, o
       let resWriteCb = none[AsyncStreamCb]()
     else:
       let reqReadCb = some proc () {.closure, gcsafe.} =
-        if likely(data.isAwaitingReqRead):
+        if likely(not data.isAwaitingReqRead):
           return
 
         # Do normal read with recv from socket and the rest of the necessary read event handling
-        # We discard the response because we don't need to break out of a loop
+        # We discard the return value because we don't need to break out of a loop
         discard doSockRead(selector, fd, addr data, onRequest)
       
       let resWriteCb = some proc () {.closure, gcsafe.} =
-        if likely(data.isAwaitingResWrite):
+        if likely(not data.isAwaitingResWrite):
           return
 
-        # TODO Do normal write to socket and the rest of the necessary write event handling
-    
+        echo "Do write from callback"
+
+        # Do normal write to socket and the rest of the necessary write event handling
+        # We discard the return value because we don't need to break out of a loop
+        discard doSockWrite(selector, fd, addr data)
+
     data = Data(
       fdKind: FdKind.Client,
       data: "",
@@ -530,7 +600,7 @@ proc initDataForClient(selector: Selector[Data], fd: SocketHandle, ip: string, o
       requestBodyStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterReadCb = reqReadCb),
       responseStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterWriteCb = resWriteCb),
       isAwaitingReqRead: false,
-      isAwaitingResWrite: false,
+      isAwaitingResWrite: true,
     )
     data
   else:
@@ -560,7 +630,7 @@ func initData(fdKind: FdKind): Data =
       requestBodyStream: nil,
       responseStream: nil,
       isAwaitingReqRead: false,
-      isAwaitingResWrite: false,
+      isAwaitingResWrite: true,
     )
   else:
     Data(fdKind: fdKind,
@@ -573,9 +643,11 @@ func initData(fdKind: FdKind): Data =
       contentLength: none[BiggestUInt](),
     )
 
-template withRequestData(req: Request, body: untyped) =
-  let requestData {.inject.} = addr req.selector.getData(req.client)
-  body
+# Not used with streams
+when not httpxUseStreams:
+  template withRequestData(req: Request, body: untyped) =
+    let requestData {.inject.} = addr req.selector.getData(req.client)
+    body
 
 #[ API start ]#
 
@@ -828,11 +900,7 @@ proc processEvents(selector: Selector[Data],
           if shouldBreak:
             break
       elif Event.Write in events[i].events:
-        # TODO Figure out best way to do this
-
-        when httpxUseStreams:
-          assert data.responseStream.queueLen > 0
-        else:
+        when not httpxUseStreams:
           assert data.sendQueue.len > 0
           assert data.bytesSent < data.sendQueue.len
 
@@ -847,40 +915,17 @@ proc processEvents(selector: Selector[Data],
         # This means that very large chunks should not be written to the stream because it could lead to frequent truncation of chunks and then needing to prepend them back into the queue.
         # It is safe to truncate and move chunks back into the queue because if the write was successful, the OS has already copied those bytes into its internal buffer, and no longer needs to reference our chunk's memory.
 
+        echo "CAN WRITE"
+
         when httpxUseStreams:
-          ## TODO
-        else:
-          let leftover =
-            when usePosixVersion:
-              data.sendQueue.len - data.bytesSent
-            else:
-              cint(data.sendQueue.len - data.bytesSent)
-          let ret = fd.SocketHandle.send(addr data.sendQueue[data.bytesSent], leftover, 0)
+          if data.responseStream.queueLen == 0:
+            # We know we can write to the socket but the queue is empty, so we need to wait until the queue has at least one chunk before writing
+            data.isAwaitingResWrite = true
+            break
 
-          if ret == -1:
-            # Error!
-            let lastError = osLastError()
-
-            when usePosixVersion:
-              if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
-                break
-            else:
-              if lastError.int == WSAEWOULDBLOCK:
-                break
-
-            if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
-              closeClient(data, selector, fd.SocketHandle)
-              break
-            raiseOSError(lastError)
-
-          data.bytesSent.inc(ret)
-
-          if data.sendQueue.len == data.bytesSent:
-            data.bytesSent = 0
-            data.sendQueue.setLen(0)
-            data.data.setLen(0)
-            selector.updateHandle(fd.SocketHandle,
-                                  {Event.Read})
+        let shouldBreak = doSockWrite(selector, fd.SocketHandle, data)
+        if shouldBreak:
+          break
       else:
         assert false
 

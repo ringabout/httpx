@@ -48,24 +48,21 @@ proc onRequest(req: Request): Future[void] {.async.} =
                 echo "Sleep"
                 await unsafeSleepAsync(250)
 
-              echo "ABOUT TO READ"
               let chunkRes = await stream.read()
               if chunkRes.isNone:
                 break
 
               let chunk = chunkRes.unsafeGet()
 
-              echo "Got data with length: ", chunk.len
               len += chunk.len
             
-            echo "Finished stream. Got bytes: ", len
           except ClientClosedError:
             echo "Client closed prematurely; could not read stream"
             return
 
         await req.respond(Http200, $len, headers)
       else:
-        # TODO REMOVE THIS
+        echo "About to send response"
         req.send(Http200, "Hello, World!", headers)
         return
     else:
