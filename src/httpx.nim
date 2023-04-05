@@ -155,6 +155,9 @@ type
       isAwaitingResWrite: bool
         ## Whether the server is waiting for a write on the response stream.
         ## This will be true if the client socket can be written to, but the response stream queue is empty.
+      
+      wroteResChunk: bool
+        ## Whether at least one response chunk has been written
 
 type
   Request* = object
@@ -370,7 +373,7 @@ proc doSockWrite(selector: Selector[Data], fd: SocketHandle, data: ptr Data): bo
     let chunkLen = chunk.len
 
     # Try to write the chunk
-    let ret = fd.send(addr chunk, chunkLen, 0)
+    let ret = fd.send(addr chunk[0], chunkLen, 0)
 
     # If only part of the chunk could be written, we need to get the part that could not be written and prepend it to the stream
     if ret < chunkLen:
@@ -401,10 +404,13 @@ proc doSockWrite(selector: Selector[Data], fd: SocketHandle, data: ptr Data): bo
       return true
     raiseOSError(lastError)
 
+  data.wroteResChunk = true
+  data.isAwaitingResWrite = true
+
   when httpxUseStreams:
     # If the stream is finished, dispatch event
-    if stream.isFinished:
-      selector.updateHandle(fd, {Event.Read})
+    if stream.isFinished and stream.queueLen == 0:
+      closeClient(data, selector, fd)
   else:
     data.bytesSent.inc(ret)
 
@@ -430,7 +436,15 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
   let ret = recv(fd, addr buf[0], httpxClientBufSize, 0.cint)
 
   if ret == 0:
-    closeClient(data, selector, fd)
+    when httpxUseStreams:
+      if data.wroteResChunk:
+        if unlikely(not data.requestBodyStream.isFinished):
+          data.requestBodyStream.fail(newException(ClientClosedError, "The client's request body stream is closed because a response has been written"))
+      else:
+        closeClient(data, selector, fd)
+    else:
+      closeClient(data, selector, fd)
+
     return true
 
   if ret == -1:
@@ -515,6 +529,8 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
     let needsBody = methodNeedsBody(data)
 
     when httpxUseStreams:
+      let stream = data.requestBodyStream
+
       if data.headersFinished and not data.createdRequest:
         # Parse content length if applicable
         if needsBody:
@@ -529,7 +545,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
           var bodyChunk = data.data.substr(data.headersFinishPos, data.data.len)
           data.data.setLen(data.headersFinishPos)
 
-          asyncCheck data.requestBodyStream.write(bodyChunk)
+          asyncCheck stream.write(bodyChunk)
           data.bodyBytesRead += bodyChunkLen.BiggestUInt
 
           data.data.setLen(data.headersFinishPos)
@@ -538,7 +554,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
         for i in 0 ..< ret:
           chunk[i] = buf[i]
 
-        asyncCheck data.requestBodyStream.write(chunk)
+        asyncCheck stream.write(chunk)
         data.bodyBytesRead += ret.BiggestUInt
 
         if unlikely(getGlobalDispatcher().callbacks.len > 0):
@@ -550,7 +566,9 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
       data.headersFinished = true
       
       when httpxUseStreams:
-        data.requestBodyStream.complete()
+        # We need to check whether the stream is finished because it could have been failed by a client disconnection
+        if likely(not stream.isFinished):
+          stream.complete()
       else:
         createRequest()
 
@@ -584,8 +602,6 @@ proc initDataForClient(selector: Selector[Data], fd: SocketHandle, ip: string, o
         if likely(not data.isAwaitingResWrite):
           return
 
-        echo "Do write from callback"
-
         # Do normal write to socket and the rest of the necessary write event handling
         # We discard the return value because we don't need to break out of a loop
         discard doSockWrite(selector, fd, addr data)
@@ -600,7 +616,8 @@ proc initDataForClient(selector: Selector[Data], fd: SocketHandle, ip: string, o
       requestBodyStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterReadCb = reqReadCb),
       responseStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterWriteCb = resWriteCb),
       isAwaitingReqRead: false,
-      isAwaitingResWrite: true,
+      isAwaitingResWrite: false,
+      wroteResChunk: false,
     )
     data
   else:
@@ -630,7 +647,8 @@ func initData(fdKind: FdKind): Data =
       requestBodyStream: nil,
       responseStream: nil,
       isAwaitingReqRead: false,
-      isAwaitingResWrite: true,
+      isAwaitingResWrite: false,
+      wroteResChunk: false,
     )
   else:
     Data(fdKind: fdKind,
@@ -709,6 +727,9 @@ when httpxUseStreams:
     ## Specifically, headers containing control characters such as newlines or carriage returns are dangerous.
     
     await this.responseStream.write(genHttpResponse(code, contentLen, headers))
+
+    # Since there's nothing to kick off the write, we need to send an event manually
+    this.selector.updateHandle(this.client, {Event.Write})
 
   proc respond*(this: Request, code: HttpCode, body: sink string = "", headers: sink HttpHeaders|string = "") {.inline, async.} =
     ## Sends a response with an HTTP status code, optionally with a response body, and completes the response.
@@ -915,8 +936,6 @@ proc processEvents(selector: Selector[Data],
         # This means that very large chunks should not be written to the stream because it could lead to frequent truncation of chunks and then needing to prepend them back into the queue.
         # It is safe to truncate and move chunks back into the queue because if the write was successful, the OS has already copied those bytes into its internal buffer, and no longer needs to reference our chunk's memory.
 
-        echo "CAN WRITE"
-
         when httpxUseStreams:
           if data.responseStream.queueLen == 0:
             # We know we can write to the socket but the queue is empty, so we need to wait until the queue has at least one chunk before writing
@@ -961,8 +980,7 @@ proc eventLoop(params: (OnRequest, Settings)) =
   let disp = getGlobalDispatcher()
 
   when usePosixVersion:
-    selector.registerHandle(disp.getIoHandler.getFd, {Event.Read},
-                          initData(Dispatcher))
+    selector.registerHandle(disp.getIoHandler.getFd, {Event.Read}, initData(Dispatcher))
 
     var events: array[64, ReadyKey]
     while true:

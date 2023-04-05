@@ -339,8 +339,10 @@ proc complete*[T](this: AsyncStream[T]) =
   ## All pending reads and writes will be immediately failed.
   ## There will only be pending reads if the queue was empty, so subsequent reads to a non-empty queue will still function as normal.
   
-  if this.isFinished:
-    raise newException(ValueError, "Tried to complete a stream that was already finished")
+  if unlikely(this.isCompleted):
+    raise newException(ValueError, "Tried to complete a stream that was already completed")
+  elif unlikely(this.isFailed):
+    raise newException(ValueError, "Tried to complete a stream that was already failed")
 
   this.isCompletedInternal = true
 
