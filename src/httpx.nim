@@ -246,27 +246,27 @@ func initData(fdKind: FdKind, fd: SocketHandle|void = void, ip = ""): Data =
   ## Do not provide a SocketHandle (`fd`) unless fdKind is Client.
   ## Providing a SocketHandle if fdType is not client will register unnecessary callbacks on streams.
 
-  var data: Data
-  
-  # If the file descriptor argument is not provided (void), then 
-  when fd is void:
-    let reqReadCb = none[AsyncStreamCb]()
-    let resWriteCb = none[AsyncStreamCb]()
-  else:
-    let reqReadCb = some proc () {.closure, gcsafe.} =
-      if likely(data.isAwaitingReqRead):
-        return
+  return when httpxUseStreams:
+    var data: Data
 
-      # TODO Do normal read with recv from socket and the rest of the necessary read event handling
+    # If the file descriptor argument is not provided (void), then no callbacks are needed
+    when fd is void:
+      let reqReadCb = none[AsyncStreamCb]()
+      let resWriteCb = none[AsyncStreamCb]()
+    else:
+      let reqReadCb = some proc () {.closure, gcsafe.} =
+        if likely(data.isAwaitingReqRead):
+          return
+
+        # TODO Do normal read with recv from socket and the rest of the necessary read event handling
+      
+      let resWriteCb = some proc () {.closure, gcsafe.} =
+        if likely(data.isAwaitingResWrite):
+          return
+
+        # TODO Do normal write to socket and the rest of the necessary write event handling
     
-    let resWriteCb = some proc () {.closure, gcsafe.} =
-      if likely(data.isAwaitingResWrite):
-        return
-
-      # TODO Do normal write to socket and the rest of the necessary write event handling
-
-  data = when httpxUseStreams:
-    Data(fdKind: fdKind,
+    data = Data(fdKind: fdKind,
         data: "",
         headersFinished: false,
         headersFinishPos: -1, # By default we assume the fast case: end of data.
@@ -277,8 +277,9 @@ func initData(fdKind: FdKind, fd: SocketHandle|void = void, ip = ""): Data =
         isAwaitingReqRead: false,
         isAwaitingResWrite: false,
     )
+    data
   else:
-    return Data(fdKind: fdKind,
+    Data(fdKind: fdKind,
         sendQueue: "",
         bytesSent: 0,
         data: "",
@@ -287,8 +288,6 @@ func initData(fdKind: FdKind, fd: SocketHandle|void = void, ip = ""): Data =
         ip: ip,
         contentLength: none[BiggestUInt](),
     )
-
-  return data
 
 
 template withRequestData(req: Request, body: untyped) =
@@ -746,7 +745,6 @@ proc processEvents(selector: Selector[Data],
                 data.headersFinished = true
                 
                 when httpxUseStreams:
-                  echo "COMPLETED REQ BODY STREAM"
                   data.requestBodyStream.complete()
                 else:
                   createRequest()

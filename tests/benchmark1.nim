@@ -15,11 +15,11 @@ proc onRequest(req: Request): Future[void] {.async.} =
     of "/plaintext":
       const headers = "Content-Type: text/plain"
 
-      echo "GOT REQ"
-
       when httpxUseStreams:
         # await req.respond(Http200, "Hello, World!", headers)
         # return
+
+        echo "GOT REQ"
 
         var len = 0
 
