@@ -565,6 +565,10 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
 
         if unlikely(getGlobalDispatcher().callbacks.len > 0):
           asyncdispatch.poll(0)
+    else:
+      # Parse content length if applicable
+      if needsBody and unlikely(data.contentLength.isNone):
+        data.contentLength = some parseContentLength(data.data)
 
     let waitingForBody = needsBody and bodyInTransit(data)
     if likely(not waitingForBody):
@@ -962,6 +966,9 @@ when httpxSendServerDate:
   proc updateDate(fd: AsyncFD): bool =
     result = false # Returning true signifies we want timer to stop.
     serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+
+# Create dummy timer that runs every 50ms to ensure sleepAsync will run at max every 100ms
+asyncdispatch.addTimer(50, false, proc (fd: AsyncFD): bool = false)
 
 proc eventLoop(params: (OnRequest, Settings)) =
   let 
