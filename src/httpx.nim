@@ -412,10 +412,10 @@ proc doSockWrite(selector: Selector[Data], fd: SocketHandle, data: ptr Data): bo
       return true
     raiseOSError(lastError)
 
-  data.wroteResChunk = true
-  data.isAwaitingResWrite = true
-
   when httpxUseStreams:
+    data.wroteResChunk = true
+    data.isAwaitingResWrite = true
+
     # If the stream is finished, dispatch event
     if stream.isFinished and stream.queueLen == 0:
       closeClient(data, selector, fd)
@@ -555,8 +555,6 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
 
           asyncCheck stream.write(bodyChunk)
           data.bodyBytesRead += bodyChunkLen.BiggestUInt
-
-          data.data.setLen(data.headersFinishPos)
       else:
         var chunk = newString(ret)
         for i in 0 ..< ret:
