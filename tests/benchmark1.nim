@@ -2,15 +2,6 @@ import std/[options, json, asyncdispatch]
 
 import ../src/httpx
 
-proc unsafeSleepAsync(ms: int): Future[void] =
-  ## Async sleep proc used for testing.
-  ## Unsafe to use because it can cause file descriptor exhaustion.
-  ## Unlike normal 
-
-  let res = newFuture[void]("unsafeTestSleep")
-  addTimer(ms, true, proc (fd: AsyncFD): bool = res.complete())
-  return res
-
 proc onRequest(req: Request): Future[void] {.async.} =
   if true or req.httpMethod == some(HttpGet):
     case req.path.get()
@@ -58,7 +49,10 @@ proc onRequest(req: Request): Future[void] {.async.} =
         # Return the request body length
         await req.respond(Http200, $len)
       else:
-        let len = req.body
+        let len = if req.body.isSome:
+          req.body.unsafeGet().len
+        else:
+          0
 
         req.send(Http200, $len)
     else:
