@@ -256,10 +256,13 @@ proc closeClient(
 
   when httpxUseStreams:
     var reqBodyStream = data.requestBodyStream
+    var resStream = data.responseStream
 
     # Fail request body stream if not already finished
     if not reqBodyStream.isFinished:
       reqBodyStream.fail(newException(ClientClosedError, "Client connection was closed before the full request body could be received"))
+    if not resStream.isFinished:
+      resStream.fail(newException(ClientClosedError, "Client connection was closed before the response could be written"))
 
   let isRequestComplete = data.reqFut.isNil or data.reqFut.finished
   if isRequestComplete:
@@ -371,6 +374,11 @@ proc doSockWrite(selector: Selector[Data], fd: SocketHandle, data: ptr Data): bo
 
     var chunk = chunkRes.unsafeGet()
     let chunkLen = chunk.len
+
+    # If the chunk is empty, close the client and return
+    if chunkLen == 0:
+      closeClient(data, selector, fd)
+      return true
 
     # Try to write the chunk
     let ret = fd.send(addr chunk[0], chunkLen, 0)
@@ -742,6 +750,10 @@ when httpxUseStreams:
     ## You should not use unsanitized user input for header names or values, otherwise a bad actor could manipulate responses.
     ## Specifically, headers containing control characters such as newlines or carriage returns are dangerous.
     
+    # Check if the response stream is already finished
+    if this.responseStream.isFinished:
+      return
+
     # Write headers first
     await this.writeHeaders(
       code,
