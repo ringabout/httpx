@@ -25,46 +25,42 @@ proc onRequest(req: Request): Future[void] {.async.} =
       const headers = "Content-Type: text/plain"
 
       when httpxUseStreams:
-        # await req.respond(Http200, "Hello, World!", headers)
-        # return
-
-        echo "GOT REQ"
-
+        await req.respond(Http200, "Hello, World!", headers)
+        return
+      else:
+        echo "About to send response"
+        req.send(Http200, "Hello, World!", headers)
+        return
+    of "/bodysize":
+      when httpxUseStreams:
         var len = 0
-        echo req.contentLength
-        var contentLen = if req.contentLength.isSome:
-          req.contentLength.unsafeGet().int
-        else:
-          int.high
 
+        # Only try to read the body if the request has a body
         if req.requestBodyStream.isSome:
           let stream = req.requestBodyStream.unsafeGet()
 
           try:
             while true:
-              # Test slow body reading
-              # For the last 10 chunks, it sleeps between reading to simulate slow stream ingestion
-              if len > contentLen - (httpxClientBufSize * 10):
-                echo "Sleep"
-                await unsafeSleepAsync(250)
-
+              # Read the chunk
               let chunkRes = await stream.read()
+
+              # If it's None, then the body has been read fully
               if chunkRes.isNone:
                 break
 
+              # Since we didn't break, that means this is a readable chunk
               let chunk = chunkRes.unsafeGet()
-
               len += chunk.len
-            
           except ClientClosedError:
             echo "Client closed prematurely; could not read stream"
             return
 
-        await req.respond(Http200, $len, headers)
+        # Return the request body length
+        await req.respond(Http200, $len)
       else:
-        echo "About to send response"
-        req.send(Http200, "Hello, World!", headers)
-        return
+        let len = req.body
+
+        req.send(Http200, $len)
     else:
       when httpxUseStreams:
         await req.respond(Http404)
