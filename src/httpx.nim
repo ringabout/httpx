@@ -1059,6 +1059,11 @@ proc ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
   req.selector.getData(req.client).ip
 
+proc id*(req: Request): uint {.inline.} =
+  ## Returns the request's ID
+  
+  return req.selector.getData(req.client).requestID
+
 proc forget*(req: Request) =
   ## Unregisters the underlying request's client socket from httpx's
   ## event loop.
