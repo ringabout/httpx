@@ -178,6 +178,9 @@ type
         ## The request's body stream, or none if the request does not (or cannot) have a body.
         ## Through this stream, a request body can be streamed without buffering its entirety to memory.
         ## Useful for file uploads and similar.
+        ## 
+        ## Note that if the client disconnects before the full body can be read, the stream will be failed with ClientClosedError.
+        ## Make sure to catch that error when streaming request bodies.
 
       responseStream*: AsyncStream[string]
         ## The response data stream.
@@ -239,226 +242,6 @@ func initSettings*(port = Port(8080),
     numThreads: numThreads,
     startup: startup
   )
-
-# TODO ABC
-func initData(fdKind: FdKind, fd: SocketHandle|void = void, ip = ""): Data =
-  ## Initializes a Data object.
-  ## Do not provide a SocketHandle (`fd`) unless fdKind is Client.
-  ## Providing a SocketHandle if fdType is not client will register unnecessary callbacks on streams.
-
-  return when httpxUseStreams:
-    var data: Data
-
-    # If the file descriptor argument is not provided (void), then no callbacks are needed
-    when fd is void:
-      let reqReadCb = none[AsyncStreamCb]()
-      let resWriteCb = none[AsyncStreamCb]()
-    else:
-      let reqReadCb = some proc () {.closure, gcsafe.} =
-        if likely(data.isAwaitingReqRead):
-          return
-
-        # TODO Do normal read with recv from socket and the rest of the necessary read event handling
-      
-      let resWriteCb = some proc () {.closure, gcsafe.} =
-        if likely(data.isAwaitingResWrite):
-          return
-
-        # TODO Do normal write to socket and the rest of the necessary write event handling
-    
-    data = Data(fdKind: fdKind,
-        data: "",
-        headersFinished: false,
-        headersFinishPos: -1, # By default we assume the fast case: end of data.
-        ip: ip,
-        contentLength: none[BiggestUInt](),
-        requestBodyStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterReadCb = reqReadCb),
-        responseStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterWriteCb = resWriteCb),
-        isAwaitingReqRead: false,
-        isAwaitingResWrite: false,
-    )
-    data
-  else:
-    Data(fdKind: fdKind,
-        sendQueue: "",
-        bytesSent: 0,
-        data: "",
-        headersFinished: false,
-        headersFinishPos: -1, ## By default we assume the fast case: end of data.
-        ip: ip,
-        contentLength: none[BiggestUInt](),
-    )
-
-
-template withRequestData(req: Request, body: untyped) =
-  let requestData {.inject.} = addr req.selector.getData(req.client)
-  body
-
-#[ API start ]#
-
-func closed*(req: Request): bool {.inline, raises: [].} =
-  ## If the client has disconnected from the server or not.
-  result = req.client notin req.selector
-
-proc genHttpResponse*(code: HttpCode, contentLength: Option[BiggestUInt]|Option[int], headers: HttpHeaders|string): string {.inline.} =
-    ## Generates an HTTP response string (without a body) and returns it.
-    ## Includes server name and current server date if enabled.
-    ## 
-    ## **IMPORTANT**: Headers are not sanitized. Do not use unsanitized user input as header names or values, otherwise a bad actor can forge responses.
-
-    let otherHeaders =
-      if likely(headers.len != 0):
-        when headers is HttpHeaders:
-          var str = "\c\L"
-
-          # Append headers
-          var isFirstHeader = true
-          for (key, val) in headers.pairs:
-            if likely(not isFirstHeader):
-              str &= '\n'
-            else:
-              isFirstHeader = false
-
-            str &= key & ": " & val
-
-          str
-        else:
-          "\c\L" & headers
-      else:
-        ""
-  
-    result = "HTTP/1.1 " & $code
-    if contentLength.isSome:
-      result &= "\c\LContent-Length: "
-      result.addInt(contentLength.unsafeGet())
-    
-    when httpxServerName != "":
-      result &= "\c\LServer: " & httpxServerName
-    
-    when httpxSendServerDate:
-      result &= "\c\LDate: " & serverDate
-    
-    result &= otherHeaders
-    result &= "\c\L\c\L"
-
-# There is a different API for streams
-when httpxUseStreams:
-  proc writeHeaders*(req: Request, code: HttpCode, contentLen: Option[BiggestUInt] = none[BiggestUInt](), headers: HttpHeaders|string = "") {.inline, async.} =
-    ## Writes response headers, but does not complete the response stream.
-    ## It is the responsibility of the caller to write any desired body data and to ultimately complete the response stream.
-    ##
-    ## Headers can be an instance of HttpHeaders, or a raw string.
-    ##
-    ## **IMPORTANT**: Headers are not sanitized by this proc.
-    ## You should not use unsanitized user input for header names or values, otherwise a bad actor could manipulate responses.
-    ## Specifically, headers containing control characters such as newlines or carriage returns are dangerous.
-    
-    await req.responseStream.write(genHttpResponse(code, contentLen, headers))
-
-  proc respond*(req: Request, code: HttpCode, body: sink string = "", headers: sink HttpHeaders|string = "") {.inline, async.} =
-    ## Sends a response with an HTTP status code, optionally with a response body, and completes the response.
-    ## 
-    ## If you want to write headers and then write your own response body using the response stream directly, use the writeHeaders proc and the responseStream property manually.
-    ## 
-    ## Headers can be an instance of HttpHeaders, or a raw string.
-    ## 
-    ## **IMPORTANT**: Headers are not sanitized by this proc.
-    ## You should not use unsanitized user input for header names or values, otherwise a bad actor could manipulate responses.
-    ## Specifically, headers containing control characters such as newlines or carriage returns are dangerous.
-    
-    # Write headers first
-    await req.writeHeaders(
-      code,
-      contentLen = some body.len.BiggestUInt,
-      headers = headers,
-    )
-
-    # Finally, write body.
-    # We write the body as a second chunk because some clients may choose to disconnect before reading the body.
-    await req.responseStream.completeWith(body)
-
-else:
-  proc unsafeSend*(req: Request, data: string) {.inline.} =
-    ## Sends the specified data on the request socket.
-    ##
-    ## This function can be called as many times as necessary.
-    ##
-    ## It does not check whether the socket is in a state
-    ## that can be written so be careful when using it.
-
-    if req.closed:
-      return
-
-    withRequestData(req):
-      requestData.sendQueue.add(data)
-    req.selector.updateHandle(req.client, {Event.Read, Event.Write})
-
-  proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int], headers = "") {.inline.} =
-    ## Responds with the specified HttpCode and body.
-    ##
-    ## **Warning:** This can only be called once in the OnRequest callback.
-
-    if req.closed:
-      return
-
-    withRequestData(req):
-      assert requestData.headersFinished, "Selector for $1 not ready to send." % $req.client.int
-      if requestData.requestID != req.requestID:
-        raise HttpxDefect(msg: "You are attempting to send data to a stale request.")
-
-      let res = genHttpResponse(code, contentLength, headers)
-
-      requestData.sendQueue.add(res & body)
-    req.selector.updateHandle(req.client, {Event.Read, Event.Write})
-
-  proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string],
-            headers = "") {.inline, deprecated: "Use Option[int] for contentLength parameter".} =
-    req.send(code, body, some parseInt(contentLength.get($body.len)), headers)
-
-  template send*(req: Request, code: HttpCode, body: sink string, headers = "") =
-    ## Responds with the specified HttpCode and body.
-    ##
-    ## **Warning:** This can only be called once in the OnRequest callback.
-
-    req.send(code, body, some body.len, headers)
-
-  proc send*(req: Request, code: HttpCode) =
-    ## Responds with the specified HttpCode. The body of the response
-    ## is the same as the HttpCode description.
-    assert req.selector.getData(req.client).requestID == req.requestID
-    req.send(code, $code)
-
-  proc send*(req: Request, body: sink string, code = Http200) {.inline.} =
-    ## Sends a HTTP 200 OK response with the specified body.
-    ##
-    ## **Warning:** This can only be called once in the OnRequest callback.
-    req.send(code, body)
-
-template tryAcceptClient() =
-  ## Tries to accept a client, but does nothing if one cannot be accepted (due to file descriptor exhaustion, etc)
-
-  let (client, address) = fd.SocketHandle.accept
-  if client == osInvalidSocket:
-    let lastError = osLastError()
-
-    when usePosixVersion:
-      if lastError.int32 == EMFILE:
-        warn("Ignoring EMFILE error: ", osErrorMsg(lastError))
-        return
-
-    raiseOSError(lastError)
-
-  setBlocking(client, false)
-
-  template regHandle() =
-    selector.registerHandle(client, {Event.Read}, initData(Client, fd.SocketHandle, ip = address))
-
-  when usePosixVersion:
-    # Only register the handle if the file descriptor count has not been reached
-    if likely(client.int < osMaxFdCount):
-      regHandle()
-  else:
-    regHandle()
 
 proc closeClient(
   data: ptr Data,
@@ -565,6 +348,431 @@ proc genRequestID(): uint =
 
 proc validateRequest(req: Request): bool {.gcsafe.}
 
+proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRequest: OnRequest): bool =
+  ## Reads from the socket and performs all chunk handing logic.
+  ## If the caller should break/return, the proc will return true.
+
+  when httpxUseStreams:
+    # We're not waiting for a read since this proc would only be called when there is a free slot in the queue
+    data.isAwaitingReqRead = false
+
+  # Read buffer from socket
+  var buf: array[httpxClientBufSize, char]
+  let ret = recv(fd, addr buf[0], httpxClientBufSize, 0.cint)
+
+  template shouldBreak =
+    return true
+
+  if ret == 0:
+    closeClient(data, selector, fd)
+    shouldBreak()
+
+  if ret == -1:
+    # Error!
+    let lastError = osLastError()
+
+    when usePosixVersion:
+      if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
+        shouldBreak()
+    else:
+      if lastError.int == WSAEWOULDBLOCK:
+        shouldBreak()
+
+    if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
+      closeClient(data, selector, fd)
+      shouldBreak()
+    raiseOSError(lastError)
+  
+  template writeBuf() =
+    # Write buffer to our data.
+    let origLen = data.data.len
+    data.data.setLen(origLen + ret)
+    for i in 0 ..< ret:
+      data.data[origLen + i] = buf[i]
+
+  when httpxUseStreams:
+    if not data.headersFinished:
+      writeBuf()
+  else:
+    writeBuf()
+
+  if data.data.len >= 4 and (fastHeadersCheck(data) or slowHeadersCheck(data)):
+    template createRequest(needsBody: bool = false) =
+      data.requestID = genRequestID()
+
+      let request =
+        when httpxUseStreams:
+          Request(
+            selector: selector,
+            client: fd,
+            requestID: data.requestID,
+            requestBodyStream:
+              if needsBody:
+                some data.requestBodyStream
+              else:
+                none[AsyncStream[string]](),
+            responseStream: newAsyncStream[string](httpxMaxStreamQueueLength)
+          )
+        else:
+          Request(
+            selector: selector,
+            client: fd.SocketHandle,
+            requestID: data.requestID,
+          )
+
+      when httpxUseStreams:
+        data.createdRequest = true
+
+      if validateRequest(request):
+        data.reqFut = onRequest(request)
+        if not data.reqFut.isNil:
+          capture data:
+            data.reqFut.addCallback(
+              proc (fut: Future[void]) =
+                onRequestFutureComplete(fut, selector, fd)
+            )
+
+    # First line and headers for request received.
+    data.headersFinished = true
+    when not defined(release):
+      when httpxUseStreams:
+        if data.responseStream.queueLen != 0:
+          logging.warn("responseStream queue isn't empty")
+      else:
+        if data.sendQueue.len != 0:
+          logging.warn("sendQueue isn't empty.")
+        if data.bytesSent != 0:
+          logging.warn("bytesSent isn't empty.")  
+
+    when httpxUseStreams:
+      if data.headersFinished and not data.createdRequest:
+        createRequest(methodNeedsBody(data))
+
+        # Write any part of the data past the headers to the body stream
+        let bodyChunkLen = data.headersFinishPos - data.data.len
+        if bodyChunkLen > 0:
+          # Strip out chunk and truncate data string
+          var bodyChunk = data.data.substr(data.headersFinishPos, data.data.len)
+          data.data.setLen(data.headersFinishPos)
+
+          echo "WROTE TINY CHUNK: ", bodyChunk
+
+          # TODO Figure out what needs to be done here in terms of full queue
+          asyncCheck data.requestBodyStream.write(bodyChunk)
+          data.bodyBytesRead += bodyChunkLen.BiggestUInt
+
+          data.data.setLen(data.headersFinishPos)
+      else:
+        var chunk = newString(ret)
+        for i in 0 ..< ret:
+          chunk[i] = buf[i]
+
+        asyncCheck data.requestBodyStream.write(chunk)
+        data.bodyBytesRead += ret.BiggestUInt
+
+        if unlikely(getGlobalDispatcher().callbacks.len > 0):
+          asyncdispatch.poll(0)
+
+    let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
+    if likely(not waitingForBody):
+      # For pipelined requests, we need to reset this flag.
+      data.headersFinished = true
+      
+      when httpxUseStreams:
+        data.requestBodyStream.complete()
+      else:
+        createRequest()
+
+  if ret != httpxClientBufSize:
+    # Assume there is nothing else for us right now and break.
+    shouldBreak()
+
+  return false
+
+proc initDataForClient(selector: Selector[Data], fd: SocketHandle, ip: string, onRequest: OnRequest): Data =
+  ## Initializes a Data object for a client.
+  ## Use initData for any other FdKind.
+  
+  return when httpxUseStreams:
+    var data: Data
+
+    # If the file descriptor argument is not provided (void), then no callbacks are needed
+    when fd is void:
+      let reqReadCb = none[AsyncStreamCb]()
+      let resWriteCb = none[AsyncStreamCb]()
+    else:
+      let reqReadCb = some proc () {.closure, gcsafe.} =
+        if likely(data.isAwaitingReqRead):
+          return
+
+        # Do normal read with recv from socket and the rest of the necessary read event handling
+        # We discard the response because we don't need to break out of a loop
+        discard doSockRead(selector, fd, addr data, onRequest)
+      
+      let resWriteCb = some proc () {.closure, gcsafe.} =
+        if likely(data.isAwaitingResWrite):
+          return
+
+        # TODO Do normal write to socket and the rest of the necessary write event handling
+    
+    data = Data(
+      fdKind: FdKind.Client,
+      data: "",
+      headersFinished: false,
+      headersFinishPos: -1,
+      ip: ip,
+      contentLength: none[BiggestUInt](),
+      requestBodyStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterReadCb = reqReadCb),
+      responseStream: newAsyncStream[string](httpxMaxStreamQueueLength, afterWriteCb = resWriteCb),
+      isAwaitingReqRead: false,
+      isAwaitingResWrite: false,
+    )
+    data
+  else:
+    Data(fdKind: fdKind,
+        sendQueue: "",
+        bytesSent: 0,
+        data: "",
+        headersFinished: false,
+        headersFinishPos: -1,
+        ip: ip,
+        contentLength: none[BiggestUInt](),
+    )
+
+func initData(fdKind: FdKind): Data =
+  ## Initializes a Data object.
+  ## Use initDateForClient for clients.
+  
+  when httpxUseStreams:
+    Data(
+      fdKind: fdKind,
+      data: "",
+      headersFinished: false,
+      headersFinishPos: -1,
+      ip: "",
+      contentLength: none[BiggestUInt](),
+      requestBodyStream: nil,
+      responseStream: nil,
+      isAwaitingReqRead: false,
+      isAwaitingResWrite: false,
+    )
+  else:
+    Data(fdKind: fdKind,
+      sendQueue: "",
+      bytesSent: 0,
+      data: "",
+      headersFinished: false,
+      headersFinishPos: -1,
+      ip: "",
+      contentLength: none[BiggestUInt](),
+    )
+
+template withRequestData(req: Request, body: untyped) =
+  let requestData {.inject.} = addr req.selector.getData(req.client)
+  body
+
+#[ API start ]#
+
+func closed*(req: Request): bool {.inline, raises: [].} =
+  ## If the client has disconnected from the server or not.
+  result = req.client notin req.selector
+
+proc genHttpResponse*(code: HttpCode, contentLength: Option[BiggestUInt]|Option[int], headers: HttpHeaders|string): string {.inline.} =
+    ## Generates an HTTP response string (without a body) and returns it.
+    ## Includes server name and current server date if enabled.
+    ## 
+    ## **IMPORTANT**: Headers are not sanitized. Do not use unsanitized user input as header names or values, otherwise a bad actor can forge responses.
+
+    let otherHeaders =
+      if likely(headers.len != 0):
+        when headers is HttpHeaders:
+          var str = "\c\L"
+
+          # Append headers
+          var isFirstHeader = true
+          for (key, val) in headers.pairs:
+            if likely(not isFirstHeader):
+              str &= '\n'
+            else:
+              isFirstHeader = false
+
+            str &= key & ": " & val
+
+          str
+        else:
+          "\c\L" & headers
+      else:
+        ""
+  
+    result = "HTTP/1.1 " & $code
+    if contentLength.isSome:
+      result &= "\c\LContent-Length: "
+      result.addInt(contentLength.unsafeGet())
+    
+    when httpxServerName != "":
+      result &= "\c\LServer: " & httpxServerName
+    
+    when httpxSendServerDate:
+      result &= "\c\LDate: " & serverDate
+    
+    result &= otherHeaders
+    result &= "\c\L\c\L"
+
+# There is a different API for streams
+when httpxUseStreams:
+  proc writeHeaders*(this: Request, code: HttpCode, contentLen: Option[BiggestUInt] = none[BiggestUInt](), headers: HttpHeaders|string = "") {.inline, async.} =
+    ## Writes response headers, but does not complete the response stream.
+    ## It is the responsibility of the caller to write any desired body data and to ultimately complete the response stream.
+    ##
+    ## Headers can be an instance of HttpHeaders, or a raw string.
+    ##
+    ## **IMPORTANT**: Headers are not sanitized by this proc.
+    ## You should not use unsanitized user input for header names or values, otherwise a bad actor could manipulate responses.
+    ## Specifically, headers containing control characters such as newlines or carriage returns are dangerous.
+    
+    await this.responseStream.write(genHttpResponse(code, contentLen, headers))
+
+  proc respond*(this: Request, code: HttpCode, body: sink string = "", headers: sink HttpHeaders|string = "") {.inline, async.} =
+    ## Sends a response with an HTTP status code, optionally with a response body, and completes the response.
+    ## 
+    ## If you want to write headers and then write your own response body using the response stream directly, use the writeHeaders proc and the responseStream property manually.
+    ## 
+    ## Headers can be an instance of HttpHeaders, or a raw string.
+    ## 
+    ## **IMPORTANT**: Headers are not sanitized by this proc.
+    ## You should not use unsanitized user input for header names or values, otherwise a bad actor could manipulate responses.
+    ## Specifically, headers containing control characters such as newlines or carriage returns are dangerous.
+    
+    # Write headers first
+    await this.writeHeaders(
+      code,
+      contentLen = some body.len.BiggestUInt,
+      headers = headers,
+    )
+
+    # Finally, write body.
+    # We write the body as a second chunk because some clients may choose to disconnect before reading the body.
+    await this.responseStream.completeWith(body)
+  
+  proc readBodyAsString*(this: Request): Future[string] {.async.} =
+    ## Reads the entire request body as a string and returns it.
+    ## 
+    ## If the request has no body (e.g. it was a GET request), `ValueError` will be raised.
+    ## If the client disconnects while the body is being raise, `ClientClosedError` will be raised.
+    ## 
+    ## It is important to only use this proc if you know the request's content length and can confirm that it will be a reasonable size.
+    ## To deal with very large bodies, you should use requestBodyStream to stream it instead.
+
+    # Make sure the request even has a body
+    if this.requestBodyStream.isNone:
+      raise newException(ValueError, "The request's body could not be read because the request has no body")
+
+    # Initialize the result buffer with the request's content length if available
+    let bufLen = if this.contentLength.isSome:
+      this.contentLength.unsafeGet().int
+    else:
+      0
+    var res = newStringOfCap(bufLen)
+
+    let stream = this.requestBodyStream.unsafeGet()
+
+    while true:
+      let chunkRes = await stream.read()
+
+      if chunkRes.isSome:
+        # Got chunk, append it to the result buffer
+        res.add(chunkRes.unsafeGet())
+      else:
+        # Stream is complete
+        break
+    
+    return res
+
+else:
+  proc unsafeSend*(req: Request, data: string) {.inline.} =
+    ## Sends the specified data on the request socket.
+    ##
+    ## This function can be called as many times as necessary.
+    ##
+    ## It does not check whether the socket is in a state
+    ## that can be written so be careful when using it.
+
+    if req.closed:
+      return
+
+    withRequestData(req):
+      requestData.sendQueue.add(data)
+    req.selector.updateHandle(req.client, {Event.Read, Event.Write})
+
+  proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[int], headers = "") {.inline.} =
+    ## Responds with the specified HttpCode and body.
+    ##
+    ## **Warning:** This can only be called once in the OnRequest callback.
+
+    if req.closed:
+      return
+
+    withRequestData(req):
+      assert requestData.headersFinished, "Selector for $1 not ready to send." % $req.client.int
+      if requestData.requestID != req.requestID:
+        raise HttpxDefect(msg: "You are attempting to send data to a stale request.")
+
+      let res = genHttpResponse(code, contentLength, headers)
+
+      requestData.sendQueue.add(res & body)
+    req.selector.updateHandle(req.client, {Event.Read, Event.Write})
+
+  proc send*(req: Request, code: HttpCode, body: string, contentLength: Option[string],
+            headers = "") {.inline, deprecated: "Use Option[int] for contentLength parameter".} =
+    req.send(code, body, some parseInt(contentLength.get($body.len)), headers)
+
+  template send*(req: Request, code: HttpCode, body: sink string, headers = "") =
+    ## Responds with the specified HttpCode and body.
+    ##
+    ## **Warning:** This can only be called once in the OnRequest callback.
+
+    req.send(code, body, some body.len, headers)
+
+  proc send*(req: Request, code: HttpCode) =
+    ## Responds with the specified HttpCode. The body of the response
+    ## is the same as the HttpCode description.
+    assert req.selector.getData(req.client).requestID == req.requestID
+    req.send(code, $code)
+
+  proc send*(req: Request, body: sink string, code = Http200) {.inline.} =
+    ## Sends a HTTP 200 OK response with the specified body.
+    ##
+    ## **Warning:** This can only be called once in the OnRequest callback.
+    req.send(code, body)
+
+template tryAcceptClient() =
+  ## Tries to accept a client, but does nothing if one cannot be accepted (due to file descriptor exhaustion, etc)
+
+  # Try to accept a client
+  let (client, address) = fd.SocketHandle.accept()
+  if client == osInvalidSocket:
+    let lastError = osLastError()
+
+    when usePosixVersion:
+      if lastError.int32 == EMFILE:
+        warn("Ignoring EMFILE error: ", osErrorMsg(lastError))
+        return
+
+    raiseOSError(lastError)
+
+  # Make sure I/O syscalls are non-blocking
+  setBlocking(client, false)
+
+  template regHandle() =
+    selector.registerHandle(client, {Event.Read}, initDataForClient(selector, fd.SocketHandle, address, onRequest))
+
+  when usePosixVersion:
+    # Only register the handle if the file descriptor count has not been reached
+    if likely(client.int < osMaxFdCount):
+      regHandle()
+  else:
+    regHandle()
+
 proc processEvents(selector: Selector[Data],
                    events: array[64, ReadyKey], count: int,
                    onRequest: OnRequest) =
@@ -598,8 +806,6 @@ proc processEvents(selector: Selector[Data],
         discard
     of Client:
       if Event.Read in events[i].events:
-        let disp = getGlobalDispatcher()
-
         # Read until EAGAIN. We take advantage of the fact that the client
         # will wait for a response after they send a request. So we can
         # comfortably continue reading until the message ends with \c\l
@@ -612,149 +818,7 @@ proc processEvents(selector: Selector[Data],
               data.isAwaitingReqRead = true
               break
 
-          proc doRead(fd: SocketHandle, data: ptr Data): bool =
-            ## Reads from the socket and performs all chunk handing logic.
-            ## If the caller should break/return, the proc will return true.
-
-            when httpxUseStreams:
-              # We're not waiting for a read since this proc would only be called when there is a free slot in the queue
-              data.isAwaitingReqRead = false
-
-            # Read buffer from socket
-            var buf: array[httpxClientBufSize, char]
-            let ret = recv(fd, addr buf[0], httpxClientBufSize, 0.cint)
-
-            template shouldBreak =
-              return true
-
-            if ret == 0:
-              closeClient(data, selector, fd)
-              shouldBreak()
-
-            if ret == -1:
-              # Error!
-              let lastError = osLastError()
-
-              when usePosixVersion:
-                if lastError.int32 in [EWOULDBLOCK, EAGAIN]:
-                  shouldBreak()
-              else:
-                if lastError.int == WSAEWOULDBLOCK:
-                  shouldBreak()
-
-              if isDisconnectionError({SocketFlag.SafeDisconn}, lastError):
-                closeClient(data, selector, fd)
-                shouldBreak()
-              raiseOSError(lastError)
-            
-            template writeBuf() =
-              # Write buffer to our data.
-              let origLen = data.data.len
-              data.data.setLen(origLen + ret)
-              for i in 0 ..< ret:
-                data.data[origLen + i] = buf[i]
-
-            when httpxUseStreams:
-              if not data.headersFinished:
-                writeBuf()
-            else:
-              writeBuf()
-
-            if data.data.len >= 4 and (fastHeadersCheck(data) or slowHeadersCheck(data)):
-              template createRequest(needsBody: bool = false) =
-                data.requestID = genRequestID()
-
-                let request =
-                  when httpxUseStreams:
-                    Request(
-                      selector: selector,
-                      client: fd.SocketHandle,
-                      requestID: data.requestID,
-                      requestBodyStream:
-                        if needsBody:
-                          some data.requestBodyStream
-                        else:
-                          none[AsyncStream[string]](),
-                      responseStream: newAsyncStream[string](httpxMaxStreamQueueLength)
-                    )
-                  else:
-                    Request(
-                      selector: selector,
-                      client: fd.SocketHandle,
-                      requestID: data.requestID,
-                    )
-
-                when httpxUseStreams:
-                  data.createdRequest = true
-
-                if validateRequest(request):
-                  data.reqFut = onRequest(request)
-                  if not data.reqFut.isNil:
-                    capture data:
-                      data.reqFut.addCallback(
-                        proc (fut: Future[void]) =
-                          onRequestFutureComplete(fut, selector, fd)
-                      )
-
-              # First line and headers for request received.
-              data.headersFinished = true
-              when not defined(release):
-                when httpxUseStreams:
-                  if data.responseStream.queueLen != 0:
-                    logging.warn("responseStream queue isn't empty")
-                else:
-                  if data.sendQueue.len != 0:
-                    logging.warn("sendQueue isn't empty.")
-                  if data.bytesSent != 0:
-                    logging.warn("bytesSent isn't empty.")  
-
-              when httpxUseStreams:
-                if data.headersFinished and not data.createdRequest:
-                  createRequest(methodNeedsBody(data))
-
-                  # Write any part of the data past the headers to the body stream
-                  let bodyChunkLen = data.headersFinishPos - data.data.len
-                  if bodyChunkLen > 0:
-                    # Strip out chunk and truncate data string
-                    var bodyChunk = data.data.substr(data.headersFinishPos, data.data.len)
-                    data.data.setLen(data.headersFinishPos)
-
-                    echo "WROTE TINY CHUNK: ", bodyChunk
-
-                    # TODO Figure out what needs to be done here in terms of full queue
-                    asyncCheck data.requestBodyStream.write(bodyChunk)
-                    data.bodyBytesRead += bodyChunkLen.BiggestUInt
-
-                    data.data.setLen(data.headersFinishPos)
-                else:
-                  var chunk = newString(ret)
-                  for i in 0 ..< ret:
-                    chunk[i] = buf[i]
-
-                  # TODO Figure out what needs to be done here in terms of full queu
-                  asyncCheck data.requestBodyStream.write(chunk)
-                  data.bodyBytesRead += ret.BiggestUInt
-
-                  if unlikely(disp.callbacks.len > 0):
-                    asyncdispatch.poll(0)
-
-              let waitingForBody = methodNeedsBody(data) and bodyInTransit(data)
-              if likely(not waitingForBody):
-                # For pipelined requests, we need to reset this flag.
-                data.headersFinished = true
-                
-                when httpxUseStreams:
-                  data.requestBodyStream.complete()
-                else:
-                  createRequest()
-
-            if ret != httpxClientBufSize:
-              # Assume there is nothing else for us right now and break.
-              shouldBreak()
-
-            return false
-
-          let shouldBreak = doRead(fd.SocketHandle, data)
+          let shouldBreak = doSockRead(selector, fd.SocketHandle, data, onRequest)
           if shouldBreak:
             break
       elif Event.Write in events[i].events:
