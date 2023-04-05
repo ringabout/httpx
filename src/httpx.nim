@@ -38,9 +38,9 @@ else:
 
 export httpcore
 
-const httpxUseStreams* {.booldefine.} = true
+const httpxUseStreams* {.booldefine.} = false
   ## Whether to expose stream APIs using FutureStream instead of buffering requests and responses internally.
-  ## Defaults to true.
+  ## Defaults to false.
 
 const httpxMaxStreamQueueLength* {.intdefine.} = 4
   ## The maximum number of buffers to queue in request body streams.
