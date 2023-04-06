@@ -475,10 +475,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
   
   # For some reason, this doesn't get reset between some requests, so we need to reset it manually here
   if unlikely(data.data.len == 0):
-    data.contentLength = initDataForClient(selector, )
-
-    when httpxUseStreams:
-      data.requestBodyStream 
+    data.contentLength = none[BiggestUInt]()
 
   template writeBuf() =
     # Write buffer to our data.
