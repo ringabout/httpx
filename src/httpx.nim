@@ -16,6 +16,8 @@
 # limitations under the License.
 
 # TODO Create configurable constant for max headers size (default to 8KiB)
+# TODO Fix bug where it repeatedly reports "client closed prematurely" when doing "bombardier -m POST -c 100 --body='fff' http://127.0.0.1:8080/bodysize"
+# TODO ^ That bug is still present when using only one connection with "-c 1" and all of the requests are timing out no matter how many connections are used
 
 import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
@@ -547,7 +549,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
         createRequest(needsBody)
 
         # Write any part of the data past the headers to the body stream
-        let bodyChunkLen = data.headersFinishPos - data.data.len
+        let bodyChunkLen = data.data.len - data.headersFinishPos
         if bodyChunkLen > 0:
           # Strip out chunk and truncate data string
           var bodyChunk = data.data.substr(data.headersFinishPos, data.data.len)
@@ -711,6 +713,7 @@ proc genHttpResponse*(code: HttpCode, contentLength: Option[BiggestUInt]|Option[
         ""
   
     result = "HTTP/1.1 " & $code
+
     if contentLength.isSome:
       result &= "\c\LContent-Length: "
       result.addInt(contentLength.unsafeGet())
@@ -763,9 +766,12 @@ when httpxUseStreams:
       headers = headers,
     )
 
-    # Finally, write body.
+    # Finally, write body if any.
     # We write the body as a second chunk because some clients may choose to disconnect before reading the body.
-    await this.responseStream.completeWith(body)
+    if body == "":
+      this.responseStream.complete()
+    else:
+      await this.responseStream.completeWith(body)
   
   proc readBodyAsString*(this: Request): Future[string] {.async.} =
     ## Reads the entire request body as a string and returns it.
@@ -1040,20 +1046,21 @@ proc headers*(req: Request): Option[HttpHeaders] =
     return
   parseHeaders(req.selector.getData(req.client).data)
 
-proc body*(req: Request): Option[string] =
-  ## Retrieves the body of the request.
-  let pos = req.selector.getData(req.client).headersFinishPos
-  if pos == -1: 
-    return none(string)
-  result = some(req.selector.getData(req.client).data[pos .. ^1])
+when not httpxUseStreams:
+  proc body*(req: Request): Option[string] =
+    ## Retrieves the body of the request.
+    let pos = req.selector.getData(req.client).headersFinishPos
+    if pos == -1: 
+      return none(string)
+    result = some(req.selector.getData(req.client).data[pos .. ^1])
 
-  when not defined(release):
-    let length =
-      if req.headers.get.hasKey("Content-Length"):
-        req.headers.get["Content-Length"].parseInt
-      else:
-        0
-    doAssert result.get.len == length
+    when not defined(release):
+      let length =
+        if req.headers.get.hasKey("Content-Length"):
+          req.headers.get["Content-Length"].parseInt
+        else:
+          0
+      doAssert result.get.len == length
 
 proc ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
