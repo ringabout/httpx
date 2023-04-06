@@ -475,7 +475,10 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
   
   # For some reason, this doesn't get reset between some requests, so we need to reset it manually here
   if unlikely(data.data.len == 0):
-    data.contentLength = none[BiggestUInt]()
+    data.contentLength = initDataForClient(selector, )
+
+    when httpxUseStreams:
+      data.requestBodyStream 
 
   template writeBuf() =
     # Write buffer to our data.
@@ -1002,8 +1005,9 @@ proc eventLoop(params: (OnRequest, Settings)) =
     discard updateDate(0.AsyncFD)
     asyncdispatch.addTimer(1000, false, updateDate)
 
-  # Add dummy timer that ensures timers registered in request handlers are called
-  asyncdispatch.addTimer(0, false, proc (fd: AsyncFD): bool = false)
+  # Add dummy timer that ensures timers registered in request handlers are called.
+  # It calls every 100ms, so things like sleepAsync will take a maximum of 200ms to complete.
+  asyncdispatch.addTimer(100, false, proc (fd: AsyncFD): bool = false)
 
   let disp = getGlobalDispatcher()
 
