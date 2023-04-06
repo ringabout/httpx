@@ -343,7 +343,6 @@ proc bodyInTransit(data: ptr Data): bool =
     else:
       (data.data.len - data.headersFinishPos).BiggestUInt
 
-  echo "bodyLen = ", bodyLen, ", contentLen = ", contentLen
   assert(not (bodyLen > contentLen))
 
   return bodyLen < contentLen
@@ -574,9 +573,7 @@ proc doSockRead(selector: Selector[Data], fd: SocketHandle, data: ptr Data, onRe
           asyncdispatch.poll(0)
     else:
       # Parse content length if applicable
-      echo data.requestID
       if needsBody and unlikely(data.contentLength.isNone):
-        echo "PARSE CONTENT LEN"
         data.contentLength = some parseContentLength(data.data)
 
     let waitingForBody = needsBody and bodyInTransit(data)
