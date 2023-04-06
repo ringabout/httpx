@@ -396,7 +396,7 @@ proc doSockWrite(selector: Selector[Data], fd: SocketHandle, data: ptr Data): bo
         data.sendQueue.len - data.bytesSent
       else:
         cint(data.sendQueue.len - data.bytesSent)
-    let ret = fd.SocketHandle.send(addr data.sendQueue[data.bytesSent], leftover, 0)
+    let ret = fd.send(addr data.sendQueue[data.bytesSent], leftover, 0)
 
   if ret == -1:
     # Error!
@@ -898,6 +898,7 @@ proc processEvents(selector: Selector[Data],
 
   for i in 0 ..< count:
     let fd = events[i].fd
+
     var data: ptr Data = addr(getData(selector, fd))
     # Handle error events first.
     if Event.Error in events[i].events:
