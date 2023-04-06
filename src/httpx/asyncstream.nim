@@ -135,7 +135,7 @@ func queue*[T](this: AsyncStream[T]): Deque[T] {.inline.} =
   ## Warning: modifying the queue manually while there are pending reads or writes will cause a deadlock until a new read/write occurs.
   ## Exercise caution when modifying it!
 
-proc `=maxQueueLen`*[T](this: AsyncStream[T], newLen: range[1..high(int)]) {.inline.} =
+proc `maxQueueLen=`*[T](this: AsyncStream[T], newLen: range[1..high(int)]) {.inline.} =
   ## Sets the maximum queue length.
   ## Raises ValueError if the new length is less than the current queue length.
   ## Lowering queue size while a stream is active is dangerous because it can lower stream performance.
