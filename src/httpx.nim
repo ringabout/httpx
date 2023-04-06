@@ -16,8 +16,6 @@
 # limitations under the License.
 
 # TODO Create configurable constant for max headers size (default to 8KiB)
-# TODO Fix bug where it repeatedly reports "client closed prematurely" when doing "bombardier -m POST -c 100 --body='fff' http://127.0.0.1:8080/bodysize"
-# TODO ^ That bug is still present when using only one connection with "-c 1" and all of the requests are timing out no matter how many connections are used
 
 import net, nativesockets, os, httpcore, asyncdispatch, strutils
 import options, logging, times, heapqueue, std/monotimes
