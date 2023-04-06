@@ -169,7 +169,7 @@ proc write*[T](this: AsyncStream[T], item: sink T, prepend: bool|void = void): F
 
   # Do completed check immediately because the stream may be completed even if the queue is full.
   # If we only did this when there's a free queue slot, then the future would only fail after some data is read, instead of failing immediately.
-  if this.isCompleted:
+  if unlikely(this.isCompleted):
     failAndReturn(mkComplExc())
 
   template doWrite() =
@@ -273,12 +273,12 @@ proc read*[T](this: AsyncStream[T]): Future[Option[T]] =
     # The queue is empty; wait until there is an item, read it, then complete future (assuming the stream hasn't been failed)
 
     # Do fail check immediately, otherwise a failed stream with no data will hang forever
-    if this.isFailed:
+    if unlikely(this.isFailed):
       failAndReturn(this.exceptionInternal.unsafeGet())
 
     proc readCb() {.closure, gcsafe.} =
       # Do necessary checks before reading
-      if this.isFailed:
+      if unlikely(this.isFailed):
         failAndReturn(this.exceptionInternal.unsafeGet(), inCb = true)
       if this.isCompleted and this.queueLen < 1:
         complAndReturn(none[T](), inCb = true)
@@ -303,8 +303,10 @@ proc readAll*[T](this: AsyncStream[T], expectedLen: Natural = 0): Future[seq[T]]
   
   var res = newSeq[T](expectedLen)
 
+  var item: Option[T]
+
   while true:
-    let item = await this.read()
+    item = await this.read()
 
     if item.isSome:
       res.add(item.unsafeGet())
