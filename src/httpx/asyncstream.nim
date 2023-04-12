@@ -134,6 +134,8 @@ func queue*[T](this: AsyncStream[T]): Deque[T] {.inline.} =
   ## 
   ## Warning: modifying the queue manually while there are pending reads or writes will cause a deadlock until a new read/write occurs.
   ## Exercise caution when modifying it!
+  
+  return this.queue
 
 proc `maxQueueLen=`*[T](this: AsyncStream[T], newLen: range[1..high(int)]) {.inline.} =
   ## Sets the maximum queue length.
