@@ -79,6 +79,9 @@ type
   OnRequest* = proc (req: Request): Future[void] {.gcsafe, gcsafe.}
     ## Callback used to handle HTTP requests
 
+  ThreadVars = tuple
+    event: Option[AsyncEvent]
+
   Startup = proc () {.closure, gcsafe.}
 
   Settings* = object
@@ -517,9 +520,9 @@ when httpxSendServerDate:
     result = false # Returning true signifies we want timer to stop.
     serverDate = now().utc().format("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
 
-proc eventLoop(params: (OnRequest, Settings)) =
+proc eventLoop(params: (OnRequest, Settings, ThreadVars)) =
   let 
-    (onRequest, settings) = params
+    (onRequest, settings, threadVars) = params
     selector = newSelector[Data]()
     server = newSocket()
 
@@ -566,6 +569,9 @@ proc eventLoop(params: (OnRequest, Settings)) =
       if ret > 0:
         processEvents(selector, events, ret, onRequest)
       asyncdispatch.poll(0)
+
+  if threadVars.event.isSome():
+    threadVars.event.get().trigger()
 
 func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
   ## Parses the request's data to find the request HttpMethod.
@@ -645,10 +651,10 @@ proc run*(onRequest: OnRequest, settings: Settings) =
 
     if numThreads > 1:
       when compileOption("threads"):
-        var threads = newSeq[Thread[(OnRequest, Settings)]](numThreads)
+        var threads = newSeq[Thread[(OnRequest, Settings, ThreadVars)]](numThreads)
         for i in 0 ..< numThreads:
-          createThread[(OnRequest, Settings)](
-            threads[i], eventLoop, (onRequest, settings)
+          createThread[(OnRequest, Settings, ThreadVars)](
+            threads[i], eventLoop, (onRequest, settings, (none(AsyncEvent),))
           )
         
         logging.debug("Listening on port ",
@@ -658,9 +664,9 @@ proc run*(onRequest: OnRequest, settings: Settings) =
       else:
         doAssert false, "Please enable threads when numThreads is greater than 1!"
     else:
-      eventLoop((onRequest, settings))
+      eventLoop((onRequest, settings, (none(AsyncEvent),)))
   else:
-    eventLoop((onRequest, settings))
+    eventLoop((onRequest, settings, (none(AsyncEvent),)))
     logging.debug("Starting ", 1, " threads")
 
 proc run*(onRequest: OnRequest) {.inline.} =
@@ -669,6 +675,53 @@ proc run*(onRequest: OnRequest) {.inline.} =
   ##
   ## See the other ``run`` proc for more info.
   run(onRequest, Settings(port: Port(8080), bindAddr: "", startup: doNothing()))
+
+proc waitEvent(ev: AsyncEvent): Future[void] =
+   var fut = newFuture[void]("waitEvent")
+   proc cb(fd: AsyncFD): bool = fut.complete(); return true
+   addEvent(ev, cb)
+   return fut
+
+proc runAsync*(onRequest: OnRequest, settings: Settings) {.async.} =
+  ## Starts the HTTP server and calls `onRequest` for each request.
+  ##
+  ## The ``onRequest`` procedure returns a ``Future[void]`` type. But
+  ## unlike most asynchronous procedures in Nim, it can return ``nil``
+  ## for better performance, when no async operations are needed.
+  when compileOption("threads"):
+    let numThreads =
+      when useWinVersion:
+        1
+      else:
+        if settings.numThreads == 0: 
+          countProcessors()
+        else:
+          settings.numThreads
+
+    logging.debug("Starting ", numThreads, " threads")
+
+    var futures: seq[Future[void]] = @[]
+    var threads = newSeq[Thread[(OnRequest, Settings, ThreadVars)]](numThreads)
+    for i in 0 ..< numThreads:
+      let ev = newAsyncEvent()
+      createThread[(OnRequest, Settings, ThreadVars)](
+        threads[i], eventLoop, (onRequest, settings, (some(ev),))
+      )
+      futures.add(waitEvent(ev))
+
+    logging.debug("Listening on port ", settings.port) # This line is used in the tester to signal readiness.
+
+    await all(futures)
+
+  else:
+    doAssert false, "Please enable threads when using runAsync!"
+
+proc runAsync*(onRequest: OnRequest) {.inline, async.} =
+  ## Starts the HTTP server with default settings. Calls `onRequest` for each
+  ## request.
+  ##
+  ## See the other ``run`` proc for more info.
+  await runAsync(onRequest, Settings(port: Port(8080), bindAddr: "", startup: doNothing()))
 
 when false:
   proc close*(port: Port) =
