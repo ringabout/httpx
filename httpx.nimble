@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.3.5"
+version       = "0.3.6"
 author        = "ringabout"
 description   = "A super-fast epoll-backed and parallel HTTP server."
 license       = "Apache 2.0"

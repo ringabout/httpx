@@ -122,7 +122,7 @@ func parseHeaders*(data: string): Option[HttpHeaders] =
 
   return none(HttpHeaders)
 
-func parseContentLength*(data: string): int =
+func parseContentLength*(data: string): BiggestUInt =
   result = 0
 
   let headers = data.parseHeaders()
@@ -132,4 +132,4 @@ func parseContentLength*(data: string): int =
   if unlikely(not headers.get.hasKey("Content-Length")):
     return
 
-  discard headers.get["Content-Length"].parseSaturatedNatural(result)
+  discard headers.get["Content-Length"].parseBiggestUInt(result)
