@@ -573,23 +573,23 @@ proc eventLoop(params: (OnRequest, Settings, ThreadVars)) =
   if threadVars.event.isSome():
     threadVars.event.get().trigger()
 
-func httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
+proc httpMethod*(req: Request): Option[HttpMethod] {.inline.} =
   ## Parses the request's data to find the request HttpMethod.
   parseHttpMethod(req.selector.getData(req.client).data)
 
-func path*(req: Request): Option[string] {.inline.} =
+proc path*(req: Request): Option[string] {.inline.} =
   ## Parses the request's data to find the request target.
   if unlikely(req.client notin req.selector):
     return
   parsePath(req.selector.getData(req.client).data)
 
-func headers*(req: Request): Option[HttpHeaders] =
+proc headers*(req: Request): Option[HttpHeaders] =
   ## Parses the request's data to get the headers.
   if unlikely(req.client notin req.selector):
     return
   parseHeaders(req.selector.getData(req.client).data)
 
-func body*(req: Request): Option[string] =
+proc body*(req: Request): Option[string] =
   ## Retrieves the body of the request.
   let pos = req.selector.getData(req.client).headersFinishPos
   if pos == -1: 
@@ -604,7 +604,7 @@ func body*(req: Request): Option[string] =
         0
     doAssert result.get.len == length
 
-func ip*(req: Request): string =
+proc ip*(req: Request): string =
   ## Retrieves the IP address that the request was made from.
   req.selector.getData(req.client).ip
 
