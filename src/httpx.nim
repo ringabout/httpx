@@ -93,6 +93,10 @@ type
     bindAddr*: string
       ## The address to bind to
 
+    listener*: Socket
+      ## Socket to use, if nil the socket is created from bindAddr and port
+      ## The socket must be listening, and it will be set non blocking
+
     numThreads: int
       ## The number of threads to serve on
 
@@ -153,12 +157,14 @@ func initSettings*(port = Port(8080),
                    bindAddr = "",
                    numThreads = 0,
                    startup: Startup = doNothing(),
+                   listener: Socket = nil
 ): Settings =
   ## Creates a new HTTP server Settings object with the provided options.
 
   result = Settings(
     port: port,
     bindAddr: bindAddr,
+    listener: listener,
     numThreads: numThreads,
     startup: startup
   )
@@ -268,6 +274,12 @@ template tryAcceptClient() =
     let lastError = osLastError()
 
     when usePosixVersion:
+      if lastError.int32 == EAGAIN:
+        # this is not an error as multiple threads can wake up for the same
+        # event (in case the listener socket is shared) and only a single thread
+        # can successfully accept the connection.
+        # Skip and try again next time.
+        return
       if lastError.int32 == EMFILE:
         warn("Ignoring EMFILE error: ", osErrorMsg(lastError))
         return
@@ -524,15 +536,18 @@ proc eventLoop(params: (OnRequest, Settings, ThreadVars)) =
   let 
     (onRequest, settings, threadVars) = params
     selector = newSelector[Data]()
-    server = newSocket()
 
   if settings.startup != nil:
     settings.startup()
 
-  server.setSockOpt(OptReuseAddr, true)
-  server.setSockOpt(OptReusePort, true)
-  server.bindAddr(settings.port, settings.bindAddr)
-  server.listen()
+  var server: Socket = settings.listener;
+  if server == nil:
+    server = newSocket()
+    server.setSockOpt(OptReuseAddr, true)
+    server.setSockOpt(OptReusePort, true)
+    server.bindAddr(settings.port, settings.bindAddr)
+    server.listen()
+
   server.getFd.setBlocking(false)
   selector.registerHandle(server.getFd, {Event.Read}, initData(Server))
 
