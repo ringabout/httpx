@@ -47,8 +47,8 @@ run(onRequest)
 ```
 
 ## Websocket support
-https://github.com/xflywind/websocketx
+https://github.com/ringabout/websocketx
 
 ```
-nimble install https://github.com/xflywind/websocketx
+nimble install https://github.com/ringabout/websocketx
 ```
