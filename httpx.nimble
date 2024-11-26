@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.3.7"
+version       = "0.3.8"
 author        = "ringabout"
 description   = "A super-fast epoll-backed and parallel HTTP server."
 license       = "Apache 2.0"
@@ -11,7 +11,7 @@ srcDir = "src"
 
 
 requires "nim >= 1.6.12"
-requires "ioselectors >= 0.1.6"
+requires "ioselectors >= 0.2.0"
 
 
 task helloworld, "Compiles and executes the hello world server.":
